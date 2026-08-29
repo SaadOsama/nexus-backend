@@ -9,15 +9,6 @@ const sendRequest = async (req, res) => {
       return res.status(400).json({ success: false, message: 'project_id and sender_id are required.' });
     }
 
-    const [existing] = await db.execute(
-      'SELECT id FROM collaboration_requests WHERE project_id = ? AND sender_id = ?',
-      [project_id, sender_id]
-    );
-
-    if (existing.length > 0) {
-      return res.status(400).json({ success: false, message: 'Already requested for this project.' });
-    }
-
     const [result] = await db.execute(
       `INSERT INTO collaboration_requests (project_id, sender_id, email, message) VALUES (?, ?, ?, ?)`,
       [project_id, sender_id, email || null, message || null]
@@ -46,12 +37,11 @@ const getIncomingRequests = async (req, res) => {
         cr.email,
         cr.message,
         cr.status,
-        COALESCE(u.fullName, 'Anonymous User') AS senderName,
+        SUBSTRING_INDEX(cr.email, '@', 1) AS senderName,
         'wants to collaborate on' AS actionText,
         p.title AS targetName
        FROM collaboration_requests cr
        JOIN projects p ON cr.project_id = p.id
-       LEFT JOIN users u ON cr.sender_id = u.id
        WHERE p.user_id = ? AND cr.status = 'pending'
        ORDER BY cr.created_at DESC`,
       [userId]
