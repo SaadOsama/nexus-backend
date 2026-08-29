@@ -35,7 +35,6 @@ const corsOptions = {
 app.disable('etag');
 
 app.use(cors(corsOptions));
-app.options('*', cors(corsOptions));
 app.use(express.json());
 
 // Never cache API responses
