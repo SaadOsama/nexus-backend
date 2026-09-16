@@ -1,101 +1,150 @@
+const express = require('express');
+const router = express.Router();
 const db = require('../config/db');
+const { verifyToken } = require('../middleware/authMiddleware');
 
-// Send Request
-const sendRequest = async (req, res) => {
+const handleSendRequest = async (req, res) => {
   try {
-    const { project_id, sender_id, email, message } = req.body;
+    const project_id = req.body.project_id || req.body.projectId;
+    // Extract sender_id from body or JWT auth token
+    const sender_id =
+      req.body.sender_id ||
+      req.body.senderId ||
+      req.body.user_id ||
+      req.body.userId ||
+      req.user?.id;
+    const message = req.body.message || null;
+
+    console.log('Incoming Collaboration Request:', { project_id, sender_id });
 
     if (!project_id || !sender_id) {
-      return res.status(400).json({ success: false, message: 'project_id and sender_id are required.' });
+      return res.status(400).json({
+        success: false,
+        message: 'project_id and sender_id are required.',
+      });
     }
 
-    const [result] = await db.execute(
-      `INSERT INTO collaboration_requests (project_id, sender_id, email, message) VALUES (?, ?, ?, ?)`,
-      [project_id, sender_id, email || null, message || null]
+    // Verify project owner
+    const [projectRows] = await db.query(
+      'SELECT user_id FROM projects WHERE id = ?',
+      [project_id]
     );
 
-    res.status(201).json({
+    if (projectRows.length === 0) {
+      return res.status(404).json({
+        success: false,
+        message: 'Project not found.',
+      });
+    }
+
+    // Prevent requesting own project
+    if (Number(projectRows[0].user_id) === Number(sender_id)) {
+      return res.status(400).json({
+        success: false,
+        message: 'You cannot send a collaboration request to your own project.',
+      });
+    }
+
+    // 🟢 FIX: also store the optional message the sender typed, so the
+    // recipient's inbox can actually show it (previously this went to a
+    // different, disconnected table and was lost).
+    await db.execute(
+      'INSERT INTO collaborations (project_id, sender_id, message) VALUES (?, ?, ?)',
+      [project_id, sender_id, message]
+    );
+
+    return res.status(201).json({
       success: true,
-      message: 'Request sent successfully!',
-      requestId: result.insertId
+      message: 'Collaboration request sent successfully!',
     });
-  } catch (error) {
-    res.status(500).json({ success: false, message: 'Server error: ' + error.message });
+  } catch (err) {
+    if (err.code === 'ER_DUP_ENTRY') {
+      return res.status(400).json({
+        success: false,
+        message: 'You have already requested collaboration for this project.',
+      });
+    }
+
+    console.error('Error in sendRequest:', err);
+    return res.status(500).json({
+      success: false,
+      message: 'Server Error: ' + err.message,
+    });
   }
 };
 
-// Get Incoming Requests for User
-const getIncomingRequests = async (req, res) => {
+// 🟢 NEW: GET /api/collaborations — incoming requests for the logged-in
+// user's projects. Reads from the SAME 'collaborations' table that
+// handleSendRequest writes to (previously the inbox read from an unrelated,
+// always-empty 'collaboration_requests' table).
+const handleGetIncoming = async (req, res) => {
   try {
-    const { userId } = req.params;
+    const ownerId = req.user?.id;
+    if (!ownerId) {
+      return res.status(401).json({ success: false, message: 'Unauthorized.' });
+    }
 
-    const [rows] = await db.execute(
-      `SELECT 
-        cr.id,
-        cr.project_id,
-        cr.sender_id,
-        cr.email,
-        cr.message,
-        cr.status,
-        SUBSTRING_INDEX(cr.email, '@', 1) AS senderName,
-        'wants to collaborate on' AS actionText,
-        p.title AS targetName
-       FROM collaboration_requests cr
-       JOIN projects p ON cr.project_id = p.id
-       WHERE p.user_id = ? AND cr.status = 'pending'
-       ORDER BY cr.created_at DESC`,
-      [userId]
+    const [rows] = await db.query(
+      `SELECT
+         c.id,
+         c.project_id,
+         c.sender_id,
+         c.message,
+         c.status,
+         c.created_at,
+         u.fullName AS senderName,
+         u.email AS senderEmail,
+         'wants to collaborate on' AS actionText,
+         p.title AS targetName
+       FROM collaborations c
+       JOIN projects p ON c.project_id = p.id
+       JOIN users u ON c.sender_id = u.id
+       WHERE p.user_id = ? AND c.status = 'pending'
+       ORDER BY c.created_at DESC`,
+      [ownerId]
     );
 
-    res.status(200).json({ success: true, data: rows });
-  } catch (error) {
-    res.status(500).json({ success: false, message: 'Server error: ' + error.message });
+    return res.status(200).json({ success: true, data: rows });
+  } catch (err) {
+    console.error('Error in getIncoming:', err);
+    return res.status(500).json({ success: false, message: 'Server Error: ' + err.message });
   }
 };
 
-// Accept Request
-const acceptRequest = async (req, res) => {
+// 🟢 NEW: shared ownership check for accept/dismiss so a user can only act
+// on requests sent to THEIR OWN projects — a request id doesn't belong to
+// them just because they're logged in.
+const updateRequestStatus = async (req, res, status) => {
   try {
+    const ownerId = req.user?.id;
     const { id } = req.params;
 
     const [result] = await db.execute(
-      "UPDATE collaboration_requests SET status = 'accepted' WHERE id = ?",
-      [id]
+      `UPDATE collaborations c
+       JOIN projects p ON c.project_id = p.id
+       SET c.status = ?
+       WHERE c.id = ? AND p.user_id = ?`,
+      [status, id, ownerId]
     );
 
     if (result.affectedRows === 0) {
-      return res.status(404).json({ success: false, message: 'Request not found.' });
+      return res.status(404).json({
+        success: false,
+        message: 'Request not found or you are not authorized to update it.',
+      });
     }
 
-    res.status(200).json({ success: true, message: 'Request accepted!' });
-  } catch (error) {
-    res.status(500).json({ success: false, message: 'Server error: ' + error.message });
+    return res.status(200).json({ success: true, message: `Request ${status}!` });
+  } catch (err) {
+    console.error('Error updating request status:', err);
+    return res.status(500).json({ success: false, message: 'Server Error: ' + err.message });
   }
 };
 
-// Dismiss Request
-const dismissRequest = async (req, res) => {
-  try {
-    const { id } = req.params;
+router.post('/', verifyToken, handleSendRequest);
+router.post('/send', verifyToken, handleSendRequest);
+router.get('/', verifyToken, handleGetIncoming);
+router.post('/accept/:id', verifyToken, (req, res) => updateRequestStatus(req, res, 'accepted'));
+router.post('/dismiss/:id', verifyToken, (req, res) => updateRequestStatus(req, res, 'rejected'));
 
-    const [result] = await db.execute(
-      "UPDATE collaboration_requests SET status = 'rejected' WHERE id = ?",
-      [id]
-    );
-
-    if (result.affectedRows === 0) {
-      return res.status(404).json({ success: false, message: 'Request not found.' });
-    }
-
-    res.status(200).json({ success: true, message: 'Request dismissed!' });
-  } catch (error) {
-    res.status(500).json({ success: false, message: 'Server error: ' + error.message });
-  }
-};
-
-module.exports = {
-  sendRequest,
-  getIncomingRequests,
-  acceptRequest,
-  dismissRequest
-};
+module.exports = router;

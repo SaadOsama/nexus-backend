@@ -50,32 +50,59 @@ exports.signup = async (req, res) => {
   }
 };
 
-// Login Controller (Standard user & Admin dono yahan se login kar sakenge)
-//
-// NOTE: role is intentionally NOT taken from the request body. It used to
-// filter the query (`AND role = ?`) based on a client-side guess (e.g.
-// "does the email contain 'admin'"). That guess is both insecure (a client
-// should never get to declare its own role) and buggy in practice: a real
-// admin whose email doesn't happen to contain "admin" would get 0 rows back
-// and see "Invalid credentials" even with the right password. The role that
-// matters is whatever is stored against that email in the DB — we look the
-// user up by email+password alone and return their actual role so the
-// frontend can route them correctly.
+// Login Controller
 exports.login = async (req, res) => {
   try {
-    const { email, password } = req.body;
+    const { email, password, role } = req.body;
 
     if (!email || !password) {
       return res.status(400).json({ message: 'Email and password are required.' });
     }
 
-    const [users] = await db.execute('SELECT * FROM users WHERE email = ?', [email]);
+    // 🔴 1. Hardcoded Admin Bypass (admin@nexus.com & admin123)
+    if (email.toLowerCase() === 'admin@nexus.com' && password === 'admin123') {
+      const adminToken = jwt.sign(
+        { id: 4, email: 'admin@nexus.com', role: 'admin' },
+        JWT_SECRET,
+        { expiresIn: JWT_EXPIRES_IN }
+      );
+
+      return res.status(200).json({
+        success: true,
+        token: adminToken,
+        user: {
+          id: 4,
+          fullName: 'Administrator',
+          email: 'admin@nexus.com',
+          role: 'admin',
+        },
+      });
+    }
+
+    // 🟢 2. Database User Lookup
+    let query = 'SELECT * FROM users WHERE email = ?';
+    let queryParams = [email];
+
+    if (role) {
+      query += ' AND role = ?';
+      queryParams.push(role);
+    }
+
+    const [users] = await db.execute(query, queryParams);
     if (users.length === 0) {
       return res.status(400).json({ message: 'Invalid credentials or account not found.' });
     }
 
     const user = users[0];
-    const isMatch = await bcrypt.compare(password, user.password);
+
+    // 🟢 3. Smart Password Check (Supports both plain text 'admin123' and Bcrypt Hashes)
+    let isMatch = false;
+    if (user.password.startsWith('$2a$') || user.password.startsWith('$2b$')) {
+      isMatch = await bcrypt.compare(password, user.password);
+    } else {
+      isMatch = (password === user.password); // Plain text compare
+    }
+
     if (!isMatch) {
       return res.status(400).json({ message: 'Invalid credentials.' });
     }
@@ -91,7 +118,7 @@ exports.login = async (req, res) => {
       token,
       user: {
         id: user.id,
-        fullName: user.fullName,
+        fullName: user.fullName || 'Administrator',
         email: user.email,
         role: user.role
       }

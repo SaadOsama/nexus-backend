@@ -1,13 +1,19 @@
 const express = require('express');
 const cors = require('cors');
+const http = require('http');
+const { Server } = require('socket.io');
 require('dotenv').config();
 
+// Imports
 const authRoutes = require('./routes/authRoutes');
 const projectRoutes = require('./routes/projectRoutes');
 const collaborationRoutes = require('./routes/collaborationRoutes');
+const messageRoutes = require('./routes/messageRoutes');
+const notificationRoutes = require('./routes/notificationRoutes');
 
 const app = express();
 
+// Allowed Origins for CORS (Production + Local domains)
 const allowedOrigins = [
   'http://localhost:5173',
   'http://localhost:5174',
@@ -17,11 +23,8 @@ const allowedOrigins = [
 
 const corsOptions = {
   origin: (origin, callback) => {
-    if (!origin || allowedOrigins.includes(origin)) {
-      callback(null, true);
-    } else {
-      callback(null, true);
-    }
+    // Allows requests from Vercel frontend or local origin
+    callback(null, true);
   },
   credentials: true,
   methods: ['GET', 'POST', 'PUT', 'PATCH', 'DELETE', 'OPTIONS'],
@@ -31,7 +34,6 @@ const corsOptions = {
 };
 
 // Disable ETag generation so API responses are never served as 304
-// (Not Modified) from the browser cache.
 app.disable('etag');
 
 app.use(cors(corsOptions));
@@ -45,17 +47,124 @@ app.use('/api', (req, res, next) => {
   next();
 });
 
-// Main Routes
-app.use('/api/auth', authRoutes);
-app.use('/api/projects', projectRoutes);
-app.use('/api/collaborations', collaborationRoutes);
+// Safe mount route helper
+const safeMount = (path, router, routerName) => {
+  if (typeof router === 'function') {
+    app.use(path, router);
+    console.log(`✅ Route Mounted Successfully: ${path}`);
+  } else {
+    console.error(`❌ ERROR: ${routerName} is UNDEFINED! Check 'module.exports = router;' in that file.`);
+    app.use(path, (req, res) => {
+      res.status(500).json({ error: `Route handler for ${path} is not correctly exported.` });
+    });
+  }
+};
 
-// Catch-all route to debug unmatched paths
+// Health Check Route (Vercel testing ke liye)
+app.get('/api/health', (req, res) => {
+  res.status(200).json({ 
+    status: 'ok', 
+    message: 'Backend server is active on Vercel!',
+    timestamp: new Date().toISOString()
+  });
+});
+
+// Route Mountings
+safeMount('/api/auth', authRoutes, 'authRoutes');
+safeMount('/api/projects', projectRoutes, 'projectRoutes');
+safeMount('/api/collaborations', collaborationRoutes, 'collaborationRoutes');
+safeMount('/api/messages', messageRoutes, 'messageRoutes');
+safeMount('/api/notifications', notificationRoutes, 'notificationRoutes');
+
+// Catch-all 404 Handler for Unmatched Routes
 app.use((req, res) => {
   res.status(404).send(`Cannot ${req.method} ${req.originalUrl} - Route is not mounted correctly.`);
 });
 
-const PORT = process.env.PORT || 5000;
-app.listen(PORT, () => {
-  console.log(`Server running on http://localhost:${PORT}`);
+// Create HTTP server wrapper
+const server = http.createServer(app);
+
+// Initialize Socket.io only when running as a HTTP server instance
+const io = new Server(server, {
+  cors: {
+    origin: '*',
+    methods: ['GET', 'POST'],
+    credentials: true,
+  },
 });
+
+// Online Users mapping: userId (String) -> socketId
+const onlineUsers = new Map();
+
+io.on('connection', (socket) => {
+  console.log('⚡ User connected to socket:', socket.id);
+
+  // Register Online User
+  socket.on('register_user', (userId) => {
+    if (userId) {
+      const stringId = String(userId);
+      onlineUsers.set(stringId, socket.id);
+      socket.join(`user_${stringId}`);
+      console.log(`✅ User ID ${stringId} mapped to Socket ${socket.id}`);
+    }
+  });
+
+  // Real-time message relay
+  socket.on('send_message', (data) => {
+    console.log('🟡 send_message event received:', data);
+
+    const senderId = Number(data.senderId || data.sender_id);
+    const receiverId = Number(data.receiverId || data.receiver_id);
+    const projectId = data.projectId || data.project_id || null;
+    const messageText = data.text || data.message;
+    const senderName = data.senderName || 'User';
+
+    if (!senderId || !receiverId || !messageText) {
+      console.error('❌ Missing message payload keys:', data);
+      return;
+    }
+
+    const payload = {
+      id: Date.now(),
+      senderId,
+      sender_id: senderId,
+      receiverId,
+      receiver_id: receiverId,
+      projectId,
+      project_id: projectId,
+      text: messageText,
+      message: messageText,
+      senderName,
+      createdAt: new Date().toISOString(),
+      created_at: new Date().toISOString(),
+    };
+
+    const receiverSocketId = onlineUsers.get(String(receiverId));
+    if (receiverSocketId) {
+      io.to(receiverSocketId).emit('receive_message', payload);
+      console.log(`📩 Delivered message to Receiver ID ${receiverId} via Socket ${receiverSocketId}`);
+    } else {
+      io.to(`user_${receiverId}`).emit('receive_message', payload);
+      console.log(`📩 Dispatched message to room user_${receiverId}`);
+    }
+  });
+
+  socket.on('disconnect', () => {
+    for (let [userId, socketId] of onlineUsers.entries()) {
+      if (socketId === socket.id) {
+        onlineUsers.delete(userId);
+        console.log(`🔌 User ID ${userId} disconnected.`);
+        break;
+      }
+    }
+  });
+});
+
+// Export Express App for Vercel Serverless Function
+module.exports = app;
+
+// Local Development Support (Only runs server locally)
+if (process.env.NODE_ENV !== 'production' && !process.env.VERCEL) {
+  const PORT = process.env.PORT || 5000;
+  server.listen(PORT, () => console.log(`🚀 Server running on http://localhost:${PORT}`));
+}

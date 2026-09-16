@@ -1,34 +1,78 @@
 const db = require('../config/db');
 
-// 1. Browse ALL projects (own + others), each flagged with isOwner /
-// hasRequested so the frontend knows exactly when to disable the
-// "Request Collaboration" button (requirement #2 and #6) without a
-// separate round trip per card.
+// 1. Browse ALL projects with Pagination, Category Filter & Search
 exports.getBrowseProjects = async (req, res) => {
   try {
-    const currentUserId = req.user.id;
+    console.log('🔥🔥🔥 NEW CODE RUNNING — VERSION 2 🔥🔥🔥'); // 🟢 TEMPORARY debug marker
 
-    const [rows] = await db.execute(
+    const currentUserId = req.user?.id || req.query.current_user_id || req.query.user_id || 0;
+
+    const page = Math.max(1, parseInt(req.query.page, 10) || 1);
+    const limit = Math.max(1, parseInt(req.query.limit, 10) || 6);
+    const offset = (page - 1) * limit;
+
+    const { category, search } = req.query;
+
+    // 🟢 FIX: sirf admin-approved projects hi public Discover page par dikhenge
+    let whereConditions = ["p.status = 'approved'"];
+    let queryParams = [];
+
+    if (category && category !== 'All projects' && category !== 'All') {
+      whereConditions.push('(p.category = ? OR p.industry = ?)');
+      queryParams.push(category, category);
+    }
+
+    if (search && search.trim() !== '') {
+      whereConditions.push('(p.title LIKE ? OR p.description LIKE ? OR p.tags LIKE ?)');
+      const searchTerm = `%${search.trim()}%`;
+      queryParams.push(searchTerm, searchTerm, searchTerm);
+    }
+
+    const whereClause = `WHERE ${whereConditions.join(' AND ')}`;
+
+    const [countRows] = await db.query(
+      `SELECT COUNT(*) AS total FROM projects p ${whereClause}`,
+      queryParams
+    );
+    const totalProjects = countRows[0]?.total || 0;
+    const totalPages = Math.ceil(totalProjects / limit) || 1;
+
+    const mainQueryParams = [currentUserId, currentUserId, ...queryParams];
+
+    const [rows] = await db.query(
       `SELECT p.*,
               CASE WHEN p.user_id = ? THEN 1 ELSE 0 END AS isOwner,
-              CASE WHEN cr.id IS NOT NULL THEN 1 ELSE 0 END AS hasRequested
+              CASE WHEN c.id IS NOT NULL THEN 1 ELSE 0 END AS hasRequested,
+              c.status AS collaborationStatus
        FROM projects p
-       LEFT JOIN collaboration_requests cr
-              ON cr.project_id = p.id AND cr.sender_id = ?
-       ORDER BY p.created_at DESC`,
-      [currentUserId, currentUserId]
+       LEFT JOIN collaborations c
+              ON c.project_id = p.id AND c.sender_id = ?
+       ${whereClause}
+       ORDER BY p.created_at DESC
+       LIMIT ${Number(limit)} OFFSET ${Number(offset)}`,
+      mainQueryParams
     );
 
-    res.status(200).json({ success: true, data: rows });
+    console.log(`🔥 Query returned ${rows.length} rows, WHERE clause: ${whereClause}`); // 🟢 TEMPORARY debug marker
+
+    res.status(200).json({
+      success: true,
+      data: rows,
+      pagination: {
+        totalProjects,
+        totalPages,
+        currentPage: page,
+        limit,
+        hasNextPage: page < totalPages,
+        hasPrevPage: page > 1
+      }
+    });
   } catch (error) {
     res.status(500).json({ success: false, message: 'Server Error: ' + error.message });
   }
 };
 
-// 2. Only the logged-in user's own projects — requirement #1 / #3.
-// Deliberately ignores any :userId param and uses req.user.id from the
-// verified token, so one user can never fetch another user's "my
-// projects" list by editing the URL.
+// 2. Only the logged-in user's own projects
 exports.getMyProjects = async (req, res) => {
   try {
     const [rows] = await db.execute(
@@ -41,8 +85,7 @@ exports.getMyProjects = async (req, res) => {
   }
 };
 
-// 3. Create Project — user_id comes from the verified token, never from
-// the request body, so a user can only ever publish as themselves.
+// 3. Create Project
 exports.createProject = async (req, res) => {
   try {
     const user_id = req.user.id;
@@ -55,8 +98,8 @@ exports.createProject = async (req, res) => {
     const tagsJson = tags ? JSON.stringify(tags) : JSON.stringify([]);
 
     const [result] = await db.execute(
-      `INSERT INTO projects (user_id, title, description, category, industry, stage, location, looking_for, match_score, tags) 
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      `INSERT INTO projects (user_id, title, description, category, industry, stage, location, looking_for, match_score, tags, status) 
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'pending')`,
       [user_id, title, description, category || null, industry || null, stage || null, location || null, looking_for || null, match_score || 90, tagsJson]
     );
 
@@ -70,7 +113,7 @@ exports.createProject = async (req, res) => {
   }
 };
 
-// 4. Update Project — only the owner may update.
+// 4. Update Project
 exports.updateProject = async (req, res) => {
   try {
     const { id } = req.params;
@@ -106,7 +149,7 @@ exports.updateProject = async (req, res) => {
   }
 };
 
-// 5. Delete Project — only the owner may delete.
+// 5. Delete Project
 exports.deleteProject = async (req, res) => {
   try {
     const { id } = req.params;
@@ -171,20 +214,46 @@ exports.unsaveProject = async (req, res) => {
   }
 };
 
-// 8. Get Saved Projects for the logged-in user
+// 8. Get Saved Projects (with pagination)
 exports.getSavedProjects = async (req, res) => {
   try {
     const user_id = req.user.id;
-    const [rows] = await db.execute(
+
+    const page = Math.max(1, parseInt(req.query.page, 10) || 1);
+    const limit = Math.max(1, parseInt(req.query.limit, 10) || 6);
+    const offset = (page - 1) * limit;
+
+    // Query 1: Total saved projects count for this user
+    const [countRows] = await db.execute(
+      'SELECT COUNT(*) AS total FROM saved_projects WHERE user_id = ?',
+      [user_id]
+    );
+    const totalProjects = countRows[0]?.total || 0;
+    const totalPages = Math.ceil(totalProjects / limit) || 1;
+
+    // Query 2: Paginated saved projects
+    const [rows] = await db.query(
       `SELECT p.*, sp.created_at AS saved_at 
        FROM saved_projects sp 
        JOIN projects p ON sp.project_id = p.id 
        WHERE sp.user_id = ? 
-       ORDER BY sp.created_at DESC`,
+       ORDER BY sp.created_at DESC
+       LIMIT ${Number(limit)} OFFSET ${Number(offset)}`,
       [user_id]
     );
 
-    res.status(200).json({ success: true, data: rows });
+    res.status(200).json({
+      success: true,
+      data: rows,
+      pagination: {
+        totalProjects,
+        totalPages,
+        currentPage: page,
+        limit,
+        hasNextPage: page < totalPages,
+        hasPrevPage: page > 1
+      }
+    });
   } catch (error) {
     res.status(500).json({ success: false, message: 'Server Error: ' + error.message });
   }
