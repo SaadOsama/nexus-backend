@@ -60,11 +60,11 @@ const safeMount = (path, router, routerName) => {
   }
 };
 
-// Health Check Route (Vercel testing ke liye)
+// Health Check Route
 app.get('/api/health', (req, res) => {
   res.status(200).json({ 
     status: 'ok', 
-    message: 'Backend server is active on Vercel!',
+    message: 'Backend server is active and running!',
     timestamp: new Date().toISOString()
   });
 });
@@ -84,7 +84,7 @@ app.use((req, res) => {
 // Create HTTP server wrapper
 const server = http.createServer(app);
 
-// Initialize Socket.io only when running as a HTTP server instance
+// Initialize Socket.io
 const io = new Server(server, {
   cors: {
     origin: '*',
@@ -160,11 +160,11 @@ io.on('connection', (socket) => {
   });
 });
 
-// Export Express App for Vercel Serverless Function
+// Export Express App (Useful for serverless / Vercel context)
 module.exports = app;
 
-// Local Development Support (Only runs server locally)
-if (process.env.NODE_ENV !== 'production' && !process.env.VERCEL) {
-  const PORT = process.env.PORT || 5000;
-  server.listen(PORT, () => console.log(`🚀 Server running on http://localhost:${PORT}`));
-}
+// Start HTTP Server on dynamic port for Railway & Local Environments
+const PORT = process.env.PORT || 5000;
+server.listen(PORT, () => {
+  console.log(`🚀 Server running on port ${PORT}`);
+});
