@@ -53,6 +53,7 @@ exports.signup = async (req, res) => {
 
 // Login Controller
 exports.login = async (req, res) => {
+  console.log('🟣🟣🟣 LOGIN V2 HIT 🟣🟣🟣');
   try {
     const { email, password, role } = req.body;
 
