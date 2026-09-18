@@ -41,7 +41,13 @@ exports.signup = async (req, res) => {
     });
 
   } catch (error) {
-    res.status(500).json({ message: 'Server Error: ' + error.message });
+    console.error('❌ SIGNUP ERROR:', error);
+    res.status(500).json({
+      message: 'Server Error',
+      errorCode: error.code || 'UNKNOWN',
+      errorMessage: error.message || 'No message',
+      errorName: error.name || 'Unknown'
+    });
   }
 };
 
@@ -112,11 +118,17 @@ exports.login = async (req, res) => {
     });
 
   } catch (error) {
-    res.status(500).json({ message: 'Server Error: ' + error.message });
+    console.error('❌ LOGIN ERROR:', error);
+    res.status(500).json({
+      message: 'Server Error',
+      errorCode: error.code || 'UNKNOWN',
+      errorMessage: error.message || 'No message',
+      errorName: error.name || 'Unknown'
+    });
   }
 };
 
-const jwt2 = jwt; // (no-op, ignore)
+// Middleware: Verify Token
 exports.verifyToken = (req, res, next) => {
   const authHeader = req.headers.authorization || req.headers.Authorization;
 
