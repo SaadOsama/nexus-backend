@@ -3,7 +3,7 @@ const bcrypt = require('bcryptjs');
 const jwt = require('jsonwebtoken');
 const { JWT_SECRET, JWT_EXPIRES_IN } = require('../config/jwt');
 
-// Signup Controller (Strictly for Standard Users)
+// Signup Controller
 exports.signup = async (req, res) => {
   try {
     const { fullName, email, password } = req.body;
@@ -37,12 +37,7 @@ exports.signup = async (req, res) => {
       success: true,
       message: 'User registered successfully!',
       token,
-      user: {
-        id: newUserId,
-        fullName,
-        email,
-        role: userRole
-      }
+      user: { id: newUserId, fullName, email, role: userRole }
     });
 
   } catch (error) {
@@ -59,30 +54,23 @@ exports.login = async (req, res) => {
       return res.status(400).json({ message: 'Email and password are required.' });
     }
 
-    // 🔴 1. Hardcoded Admin Bypass (admin@nexus.com & admin123)
+    // Hardcoded Admin Bypass
     if (email.toLowerCase() === 'admin@nexus.com' && password === 'admin123') {
       const adminToken = jwt.sign(
         { id: 4, email: 'admin@nexus.com', role: 'admin' },
         JWT_SECRET,
         { expiresIn: JWT_EXPIRES_IN }
       );
-
       return res.status(200).json({
         success: true,
         token: adminToken,
-        user: {
-          id: 4,
-          fullName: 'Administrator',
-          email: 'admin@nexus.com',
-          role: 'admin',
-        },
+        user: { id: 4, fullName: 'Administrator', email: 'admin@nexus.com', role: 'admin' },
       });
     }
 
-    // 🟢 2. Database User Lookup
+    // Database User Lookup
     let query = 'SELECT * FROM users WHERE email = ?';
     let queryParams = [email];
-
     if (role) {
       query += ' AND role = ?';
       queryParams.push(role);
@@ -95,12 +83,11 @@ exports.login = async (req, res) => {
 
     const user = users[0];
 
-    // 🟢 3. Smart Password Check (Supports both plain text 'admin123' and Bcrypt Hashes)
     let isMatch = false;
     if (user.password.startsWith('$2a$') || user.password.startsWith('$2b$')) {
       isMatch = await bcrypt.compare(password, user.password);
     } else {
-      isMatch = (password === user.password); // Plain text compare
+      isMatch = (password === user.password);
     }
 
     if (!isMatch) {
@@ -127,4 +114,35 @@ exports.login = async (req, res) => {
   } catch (error) {
     res.status(500).json({ message: 'Server Error: ' + error.message });
   }
+};
+
+const jwt2 = jwt; // (no-op, ignore)
+exports.verifyToken = (req, res, next) => {
+  const authHeader = req.headers.authorization || req.headers.Authorization;
+
+  if (!authHeader || !authHeader.startsWith('Bearer ')) {
+    return res.status(401).json({ success: false, message: 'No token provided.' });
+  }
+
+  const token = authHeader.split(' ')[1]?.trim();
+
+  if (!token) {
+    return res.status(401).json({ success: false, message: 'Token string missing.' });
+  }
+
+  try {
+    const decoded = jwt.verify(token, JWT_SECRET);
+    req.user = decoded;
+    next();
+  } catch (err) {
+    console.error('❌ JWT Verification Error:', err.message);
+    return res.status(401).json({ success: false, message: 'Invalid or expired token.' });
+  }
+};
+
+exports.requireRole = (...roles) => (req, res, next) => {
+  if (!req.user || !roles.includes(req.user.role)) {
+    return res.status(403).json({ success: false, message: 'Access denied.' });
+  }
+  next();
 };
