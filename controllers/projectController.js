@@ -68,7 +68,7 @@ exports.getBrowseProjects = async (req, res) => {
       }
     });
   } catch (error) {
-    console.error('REAL DB ERROR:', error); res.status(500).json({ success: false, message: 'Server Error: ' + error.message });
+    res.status(500).json({ success: false, message: 'Server Error: ' + error.message });
   }
 };
 
@@ -81,7 +81,7 @@ exports.getMyProjects = async (req, res) => {
     );
     res.status(200).json({ success: true, data: rows });
   } catch (error) {
-    console.error('REAL DB ERROR:', error); res.status(500).json({ success: false, message: 'Server Error: ' + error.message });
+    res.status(500).json({ success: false, message: 'Server Error: ' + error.message });
   }
 };
 
@@ -109,7 +109,7 @@ exports.createProject = async (req, res) => {
       projectId: result.insertId
     });
   } catch (error) {
-    console.error('REAL DB ERROR:', error); res.status(500).json({ success: false, message: 'Server Error: ' + error.message });
+    res.status(500).json({ success: false, message: 'Server Error: ' + error.message });
   }
 };
 
@@ -145,7 +145,7 @@ exports.updateProject = async (req, res) => {
 
     res.status(200).json({ success: true, message: 'Project updated successfully!' });
   } catch (error) {
-    console.error('REAL DB ERROR:', error); res.status(500).json({ success: false, message: 'Server Error: ' + error.message });
+    res.status(500).json({ success: false, message: 'Server Error: ' + error.message });
   }
 };
 
@@ -165,7 +165,7 @@ exports.deleteProject = async (req, res) => {
     await db.execute('DELETE FROM projects WHERE id = ?', [id]);
     res.status(200).json({ success: true, message: 'Project deleted successfully!' });
   } catch (error) {
-    console.error('REAL DB ERROR:', error); res.status(500).json({ success: false, message: 'Server Error: ' + error.message });
+    res.status(500).json({ success: false, message: 'Server Error: ' + error.message });
   }
 };
 
@@ -189,7 +189,7 @@ exports.saveProject = async (req, res) => {
     if (error.code === 'ER_DUP_ENTRY') {
       return res.status(400).json({ success: false, message: 'Project is already saved.' });
     }
-    console.error('REAL DB ERROR:', error); res.status(500).json({ success: false, message: 'Server Error: ' + error.message });
+    res.status(500).json({ success: false, message: 'Server Error: ' + error.message });
   }
 };
 
@@ -210,7 +210,7 @@ exports.unsaveProject = async (req, res) => {
 
     res.status(200).json({ success: true, message: 'Project unsaved successfully!' });
   } catch (error) {
-    console.error('REAL DB ERROR:', error); res.status(500).json({ success: false, message: 'Server Error: ' + error.message });
+    res.status(500).json({ success: false, message: 'Server Error: ' + error.message });
   }
 };
 
@@ -255,6 +255,6 @@ exports.getSavedProjects = async (req, res) => {
       }
     });
   } catch (error) {
-    console.error('REAL DB ERROR:', error); res.status(500).json({ success: false, message: 'Server Error: ' + error.message });
+    res.status(500).json({ success: false, message: 'Server Error: ' + error.message });
   }
 };

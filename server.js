@@ -3,7 +3,6 @@ const cors = require('cors');
 const http = require('http');
 const { Server } = require('socket.io');
 require('dotenv').config();
-console.log('DEBUG ENV:', { host: process.env.DB_HOST, user: process.env.DB_USER, db: process.env.DB_NAME, port: process.env.DB_PORT });
 
 // ðŸ”µ BUILD CHECK - confirm naya deployment live hai ya nahi
 console.log('ðŸ”µðŸ”µðŸ”µ BUILD CHECK v2: ' + new Date().toISOString());
