@@ -1,11 +1,15 @@
-// db.js (Backend)
-const mysql = require('mysql2/promise'); // '/promise' zaroor lagayein
+﻿const mysql = require('mysql2/promise');
 
 const db = mysql.createPool({
-  host: 'localhost',
-  user: 'root',        // Aapka DB username
-  password: '',        // Aapka DB password
-  database: 'nexus_db' // Aapka DB name
+  host: process.env.DB_HOST || 'localhost',
+  user: process.env.DB_USER || 'root',
+  password: process.env.DB_PASSWORD || '',
+  database: process.env.DB_NAME || 'nexus_db',
+  port: process.env.DB_PORT ? Number(process.env.DB_PORT) : 3306,
+  waitForConnections: true,
+  connectionLimit: 10,
+  queueLimit: 0,
+  ssl: process.env.DB_SSL === 'true' ? { rejectUnauthorized: false } : false
 });
 
 module.exports = db;
