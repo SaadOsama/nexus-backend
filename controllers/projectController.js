@@ -1,9 +1,9 @@
-const db = require('../config/db');
+﻿const db = require('../config/db');
 
 // 1. Browse ALL projects with Pagination, Category Filter & Search
 exports.getBrowseProjects = async (req, res) => {
   try {
-    console.log('🔥🔥🔥 NEW CODE RUNNING — VERSION 2 🔥🔥🔥'); // 🟢 TEMPORARY debug marker
+    console.log('ðŸ”¥ðŸ”¥ðŸ”¥ NEW CODE RUNNING â€” VERSION 2 ðŸ”¥ðŸ”¥ðŸ”¥'); // ðŸŸ¢ TEMPORARY debug marker
 
     const currentUserId = req.user?.id || req.query.current_user_id || req.query.user_id || 0;
 
@@ -13,7 +13,7 @@ exports.getBrowseProjects = async (req, res) => {
 
     const { category, search } = req.query;
 
-    // 🟢 FIX: sirf admin-approved projects hi public Discover page par dikhenge
+    // ðŸŸ¢ FIX: sirf admin-approved projects hi public Discover page par dikhenge
     let whereConditions = ["p.status = 'approved'"];
     let queryParams = [];
 
@@ -53,7 +53,7 @@ exports.getBrowseProjects = async (req, res) => {
       mainQueryParams
     );
 
-    console.log(`🔥 Query returned ${rows.length} rows, WHERE clause: ${whereClause}`); // 🟢 TEMPORARY debug marker
+    console.log(`ðŸ”¥ Query returned ${rows.length} rows, WHERE clause: ${whereClause}`); // ðŸŸ¢ TEMPORARY debug marker
 
     res.status(200).json({
       success: true,
@@ -68,7 +68,7 @@ exports.getBrowseProjects = async (req, res) => {
       }
     });
   } catch (error) {
-    res.status(500).json({ success: false, message: 'Server Error: ' + error.message });
+    console.error('REAL DB ERROR:', error); res.status(500).json({ success: false, message: 'Server Error: ' + error.message });
   }
 };
 
@@ -81,7 +81,7 @@ exports.getMyProjects = async (req, res) => {
     );
     res.status(200).json({ success: true, data: rows });
   } catch (error) {
-    res.status(500).json({ success: false, message: 'Server Error: ' + error.message });
+    console.error('REAL DB ERROR:', error); res.status(500).json({ success: false, message: 'Server Error: ' + error.message });
   }
 };
 
@@ -109,7 +109,7 @@ exports.createProject = async (req, res) => {
       projectId: result.insertId
     });
   } catch (error) {
-    res.status(500).json({ success: false, message: 'Server Error: ' + error.message });
+    console.error('REAL DB ERROR:', error); res.status(500).json({ success: false, message: 'Server Error: ' + error.message });
   }
 };
 
@@ -145,7 +145,7 @@ exports.updateProject = async (req, res) => {
 
     res.status(200).json({ success: true, message: 'Project updated successfully!' });
   } catch (error) {
-    res.status(500).json({ success: false, message: 'Server Error: ' + error.message });
+    console.error('REAL DB ERROR:', error); res.status(500).json({ success: false, message: 'Server Error: ' + error.message });
   }
 };
 
@@ -165,7 +165,7 @@ exports.deleteProject = async (req, res) => {
     await db.execute('DELETE FROM projects WHERE id = ?', [id]);
     res.status(200).json({ success: true, message: 'Project deleted successfully!' });
   } catch (error) {
-    res.status(500).json({ success: false, message: 'Server Error: ' + error.message });
+    console.error('REAL DB ERROR:', error); res.status(500).json({ success: false, message: 'Server Error: ' + error.message });
   }
 };
 
@@ -189,7 +189,7 @@ exports.saveProject = async (req, res) => {
     if (error.code === 'ER_DUP_ENTRY') {
       return res.status(400).json({ success: false, message: 'Project is already saved.' });
     }
-    res.status(500).json({ success: false, message: 'Server Error: ' + error.message });
+    console.error('REAL DB ERROR:', error); res.status(500).json({ success: false, message: 'Server Error: ' + error.message });
   }
 };
 
@@ -210,7 +210,7 @@ exports.unsaveProject = async (req, res) => {
 
     res.status(200).json({ success: true, message: 'Project unsaved successfully!' });
   } catch (error) {
-    res.status(500).json({ success: false, message: 'Server Error: ' + error.message });
+    console.error('REAL DB ERROR:', error); res.status(500).json({ success: false, message: 'Server Error: ' + error.message });
   }
 };
 
@@ -255,6 +255,6 @@ exports.getSavedProjects = async (req, res) => {
       }
     });
   } catch (error) {
-    res.status(500).json({ success: false, message: 'Server Error: ' + error.message });
+    console.error('REAL DB ERROR:', error); res.status(500).json({ success: false, message: 'Server Error: ' + error.message });
   }
 };

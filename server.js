@@ -1,11 +1,12 @@
-const express = require('express');
+﻿const express = require('express');
 const cors = require('cors');
 const http = require('http');
 const { Server } = require('socket.io');
 require('dotenv').config();
+console.log('DEBUG ENV:', { host: process.env.DB_HOST, user: process.env.DB_USER, db: process.env.DB_NAME, port: process.env.DB_PORT });
 
-// 🔵 BUILD CHECK - confirm naya deployment live hai ya nahi
-console.log('🔵🔵🔵 BUILD CHECK v2: ' + new Date().toISOString());
+// ðŸ”µ BUILD CHECK - confirm naya deployment live hai ya nahi
+console.log('ðŸ”µðŸ”µðŸ”µ BUILD CHECK v2: ' + new Date().toISOString());
 
 // Imports
 const authRoutes = require('./routes/authRoutes');
@@ -54,9 +55,9 @@ app.use('/api', (req, res, next) => {
 const safeMount = (path, router, routerName) => {
   if (typeof router === 'function') {
     app.use(path, router);
-    console.log(`✅ Route Mounted Successfully: ${path}`);
+    console.log(`âœ… Route Mounted Successfully: ${path}`);
   } else {
-    console.error(`❌ ERROR: ${routerName} is UNDEFINED! Check 'module.exports = router;' in that file.`);
+    console.error(`âŒ ERROR: ${routerName} is UNDEFINED! Check 'module.exports = router;' in that file.`);
     app.use(path, (req, res) => {
       res.status(500).json({ error: `Route handler for ${path} is not correctly exported.` });
     });
@@ -100,7 +101,7 @@ const io = new Server(server, {
 const onlineUsers = new Map();
 
 io.on('connection', (socket) => {
-  console.log('⚡ User connected to socket:', socket.id);
+  console.log('âš¡ User connected to socket:', socket.id);
 
   // Register Online User
   socket.on('register_user', (userId) => {
@@ -108,13 +109,13 @@ io.on('connection', (socket) => {
       const stringId = String(userId);
       onlineUsers.set(stringId, socket.id);
       socket.join(`user_${stringId}`);
-      console.log(`✅ User ID ${stringId} mapped to Socket ${socket.id}`);
+      console.log(`âœ… User ID ${stringId} mapped to Socket ${socket.id}`);
     }
   });
 
   // Real-time message relay
   socket.on('send_message', (data) => {
-    console.log('🟡 send_message event received:', data);
+    console.log('ðŸŸ¡ send_message event received:', data);
 
     const senderId = Number(data.senderId || data.sender_id);
     const receiverId = Number(data.receiverId || data.receiver_id);
@@ -123,7 +124,7 @@ io.on('connection', (socket) => {
     const senderName = data.senderName || 'User';
 
     if (!senderId || !receiverId || !messageText) {
-      console.error('❌ Missing message payload keys:', data);
+      console.error('âŒ Missing message payload keys:', data);
       return;
     }
 
@@ -145,10 +146,10 @@ io.on('connection', (socket) => {
     const receiverSocketId = onlineUsers.get(String(receiverId));
     if (receiverSocketId) {
       io.to(receiverSocketId).emit('receive_message', payload);
-      console.log(`📩 Delivered message to Receiver ID ${receiverId} via Socket ${receiverSocketId}`);
+      console.log(`ðŸ“© Delivered message to Receiver ID ${receiverId} via Socket ${receiverSocketId}`);
     } else {
       io.to(`user_${receiverId}`).emit('receive_message', payload);
-      console.log(`📩 Dispatched message to room user_${receiverId}`);
+      console.log(`ðŸ“© Dispatched message to room user_${receiverId}`);
     }
   });
 
@@ -156,7 +157,7 @@ io.on('connection', (socket) => {
     for (let [userId, socketId] of onlineUsers.entries()) {
       if (socketId === socket.id) {
         onlineUsers.delete(userId);
-        console.log(`🔌 User ID ${userId} disconnected.`);
+        console.log(`ðŸ”Œ User ID ${userId} disconnected.`);
         break;
       }
     }
@@ -169,5 +170,5 @@ module.exports = app;
 // Start HTTP Server on dynamic port for Railway & Local Environments
 const PORT = process.env.PORT || 5000;
 server.listen(PORT, () => {
-  console.log(`🚀 Server running on port ${PORT}`);
+  console.log(`ðŸš€ Server running on port ${PORT}`);
 });
