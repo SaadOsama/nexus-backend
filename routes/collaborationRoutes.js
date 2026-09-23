@@ -109,10 +109,12 @@ const handleAdminAction = async (req, res) => {
     const newStatus = isAccept ? 'approved' : 'rejected';
     const adminId = req.user?.id || null;
 
+    // 🟢 UPDATED: also fetch project owner id + sender name, needed for the owner notification
     const [reqRows] = await db.query(
-      `SELECT c.sender_id, p.title AS projectTitle 
+      `SELECT c.sender_id, p.title AS projectTitle, p.user_id AS ownerId, u.fullName AS senderName
        FROM collaborations c 
        JOIN projects p ON c.project_id = p.id 
+       JOIN users u ON c.sender_id = u.id
        WHERE c.id = ?`,
       [id]
     );
@@ -121,7 +123,7 @@ const handleAdminAction = async (req, res) => {
       return res.status(404).json({ success: false, message: 'Request not found.' });
     }
 
-    const { sender_id, projectTitle } = reqRows[0];
+    const { sender_id, projectTitle, ownerId, senderName } = reqRows[0];
 
     try {
       await db.execute(
@@ -148,6 +150,14 @@ const handleAdminAction = async (req, res) => {
         `INSERT INTO notifications (user_id, message, type) VALUES (?, ?, 'collaboration')`,
         [sender_id, notifMessage]
       );
+
+      // 🟢 NEW: only on approval, also notify the project owner about the new collaborator
+      if (isAccept) {
+        await db.execute(
+          `INSERT INTO notifications (user_id, message, type) VALUES (?, ?, 'collaboration')`,
+          [ownerId, `${senderName} has been approved to collaborate on your project "${projectTitle}".`]
+        );
+      }
     } catch (notifErr) {
       console.warn("Notification table insertion bypassed:", notifErr.message);
     }
@@ -189,7 +199,7 @@ const handleSendRequest = async (req, res) => {
     }
 
     const [projectRows] = await db.query(
-      'SELECT user_id FROM projects WHERE id = ?',
+      'SELECT user_id, title FROM projects WHERE id = ?',
       [project_id]
     );
 
@@ -211,6 +221,21 @@ const handleSendRequest = async (req, res) => {
       'INSERT INTO collaborations (project_id, sender_id, message, status) VALUES (?, ?, ?, ?)',
       [project_id, sender_id, message, 'pending_admin']
     );
+
+    // 🟢 NEW: notify admins that a collaboration request needs review
+    try {
+      const [admins] = await db.query(`SELECT id FROM users WHERE role = 'admin'`);
+      if (admins.length > 0) {
+        const notifValues = admins.map((a) => [
+          a.id,
+          `New collaboration request on project "${projectRows[0].title}" is awaiting your review.`,
+          'collaboration',
+        ]);
+        await db.query(`INSERT INTO notifications (user_id, message, type) VALUES ?`, [notifValues]);
+      }
+    } catch (notifErr) {
+      console.warn('Admin notification insertion bypassed:', notifErr.message);
+    }
 
     return res.status(201).json({
       success: true,

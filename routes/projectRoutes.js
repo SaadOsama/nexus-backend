@@ -4,7 +4,7 @@ const db = require('../config/db');
 const { verifyToken } = require('../middleware/authMiddleware');
 const projectController = require('../controllers/projectController');
 
-// 🟢 NEW: Admin-only guard, same pattern jo collaborationRoutes me hai
+// Admin-only guard, same pattern jo collaborationRoutes me hai
 const verifyAdmin = (req, res, next) => {
   if (req.user?.role !== 'admin') {
     return res.status(403).json({ success: false, message: 'Access denied. Admin only.' });
@@ -69,10 +69,10 @@ router.get('/mine', verifyToken, async (req, res) => {
   }
 });
 
-// 🟢 FIX: ab verifyToken required hai, aur project hamesha 'pending' status se banta hai
+// ab verifyToken required hai, aur project hamesha 'pending' status se banta hai
 const createProject = async (req, res) => {
   try {
-    const user_id = req.user.id; // 🟢 token se aata hai, body se trust nahi karte ab
+    const user_id = req.user.id; // token se aata hai, body se trust nahi karte ab
     const {
       title, description, category, industry, stage,
       location, looking_for, match_score, tags,
@@ -97,6 +97,21 @@ const createProject = async (req, res) => {
       stage || null, location || null, looking_for || null, match_score || 90, tagsJson,
     ]);
 
+    // notify all admins that a project needs review
+    try {
+      const [admins] = await db.query(`SELECT id FROM users WHERE role = 'admin'`);
+      if (admins.length > 0) {
+        const notifValues = admins.map((a) => [
+          a.id,
+          `New project "${title}" was submitted and is awaiting your review.`,
+          'project',
+        ]);
+        await db.query(`INSERT INTO notifications (user_id, message, type) VALUES ?`, [notifValues]);
+      }
+    } catch (notifErr) {
+      console.warn('Admin notification insertion bypassed:', notifErr.message);
+    }
+
     res.status(201).json({
       success: true,
       message: 'Project submitted for admin review!',
@@ -112,7 +127,7 @@ router.post('/', verifyToken, createProject);
 router.post('/publish', verifyToken, createProject);
 
 // ==========================================
-// 🟢 NEW: ADMIN — Pending projects queue
+// ADMIN — Pending projects queue
 // GET /api/projects/admin/pending
 // ==========================================
 router.get('/admin/pending', verifyToken, verifyAdmin, async (req, res) => {
@@ -132,7 +147,64 @@ router.get('/admin/pending', verifyToken, verifyAdmin, async (req, res) => {
 });
 
 // ==========================================
-// 🟢 NEW: ADMIN — Approve / Reject a project (+ notification)
+// ADMIN — Dynamic dashboard stats + recent activity
+// GET /api/projects/admin/stats
+// ==========================================
+router.get('/admin/stats', verifyToken, verifyAdmin, async (req, res) => {
+  try {
+    const [[{ totalUsers }]] = await db.query(`SELECT COUNT(*) AS totalUsers FROM users`);
+
+    const [[{ totalApprovedProjects }]] = await db.query(
+      `SELECT COUNT(*) AS totalApprovedProjects FROM projects WHERE status = 'approved'`
+    );
+
+    const [[{ pendingProjects }]] = await db.query(
+      `SELECT COUNT(*) AS pendingProjects FROM projects WHERE status = 'pending'`
+    );
+
+    const [[{ pendingCollaborations }]] = await db.query(
+      `SELECT COUNT(*) AS pendingCollaborations FROM collaborations WHERE status IN ('pending', 'pending_admin')`
+    );
+
+    const [[{ newProjectsThisWeek }]] = await db.query(
+      `SELECT COUNT(*) AS newProjectsThisWeek FROM projects
+       WHERE status = 'approved' AND reviewed_at >= (NOW() - INTERVAL 7 DAY)`
+    );
+
+    const [[{ newUsersThisWeek }]] = await db.query(
+      `SELECT COUNT(*) AS newUsersThisWeek FROM users
+       WHERE created_at >= (NOW() - INTERVAL 7 DAY)`
+    );
+
+    const [[{ collabsApprovedThisWeek }]] = await db.query(
+      `SELECT COUNT(*) AS collabsApprovedThisWeek FROM collaborations
+       WHERE status = 'approved' AND reviewed_at >= (NOW() - INTERVAL 7 DAY)`
+    );
+
+    const recentActivity = [
+      { message: `${newProjectsThisWeek} new project${newProjectsThisWeek === 1 ? '' : 's'} published this week` },
+      { message: `${newUsersThisWeek} new user${newUsersThisWeek === 1 ? '' : 's'} joined this week` },
+      { message: `${collabsApprovedThisWeek} collaboration${collabsApprovedThisWeek === 1 ? '' : 's'} approved this week` },
+    ];
+
+    res.json({
+      success: true,
+      data: {
+        totalUsers,
+        totalApprovedProjects,
+        pendingProjects,
+        pendingCollaborations,
+        recentActivity,
+      },
+    });
+  } catch (err) {
+    console.error('Error fetching admin stats:', err);
+    res.status(500).json({ success: false, message: 'Server Error: ' + err.message });
+  }
+});
+
+// ==========================================
+// ADMIN — Approve / Reject a project (+ notification)
 // POST /api/projects/admin/action/:id   body: { action: 'approve'|'reject', adminNote }
 // ==========================================
 router.post('/admin/action/:id', verifyToken, verifyAdmin, async (req, res) => {
