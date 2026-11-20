@@ -1,20 +1,11 @@
 ﻿const db = require('../config/db');
 
-// GET /api/messages/:projectId/:receiverId
-// Chat history is now scoped to a specific project — same two users can
-// have separate threads for each project they collaborate on.
 const getMessages = async (req, res) => {
   try {
     const { projectId, receiverId } = req.params;
     const senderId = req.user?.id;
-
-    if (!senderId) {
-      return res.status(401).json({ success: false, message: 'Unauthorized user.' });
-    }
-
-    if (!projectId || !receiverId) {
-      return res.status(400).json({ success: false, message: 'projectId and receiverId are required.' });
-    }
+    if (!senderId) return res.status(401).json({ success: false, message: 'Unauthorized user.' });
+    if (!projectId || !receiverId) return res.status(400).json({ success: false, message: 'projectId and receiverId are required.' });
 
     const [messages] = await db.execute(
       `SELECT * FROM messages
@@ -24,6 +15,16 @@ const getMessages = async (req, res) => {
       [projectId, senderId, receiverId, receiverId, senderId]
     );
 
+    try {
+      await db.execute(
+        `UPDATE messages SET is_read = 1
+         WHERE project_id = ? AND sender_id = ? AND receiver_id = ? AND is_read = 0`,
+        [projectId, receiverId, senderId]
+      );
+    } catch (readErr) {
+      console.warn('Mark-as-read bypassed:', readErr.message);
+    }
+
     return res.status(200).json({ success: true, messages });
   } catch (error) {
     console.error('Error in getMessages:', error);
@@ -31,44 +32,36 @@ const getMessages = async (req, res) => {
   }
 };
 
-// POST /api/messages/send
-// body: { receiverId, projectId, message }
 const sendMessage = async (req, res) => {
   try {
     const senderId = req.user?.id;
     const { receiverId, projectId, message } = req.body;
-
-    if (!senderId) {
-      return res.status(401).json({ success: false, message: 'Unauthorized. User token missing.' });
-    }
-
+    if (!senderId) return res.status(401).json({ success: false, message: 'Unauthorized. User token missing.' });
     if (!receiverId || !projectId || !message) {
-      return res.status(400).json({
-        success: false,
-        message: 'receiverId, projectId and message are required.',
-      });
+      return res.status(400).json({ success: false, message: 'receiverId, projectId and message are required.' });
     }
-
-    console.log(`Saving Message: Sender=${senderId}, Receiver=${receiverId}, Project=${projectId}, Msg=${message}`);
 
     const [result] = await db.execute(
       `INSERT INTO messages (sender_id, receiver_id, project_id, message) VALUES (?, ?, ?, ?)`,
       [senderId, receiverId, projectId, message]
     );
 
-    console.log('Message Inserted Successfully! DB ID:', result.insertId);
+    try {
+      const [senderRows] = await db.execute('SELECT fullName FROM users WHERE id = ?', [senderId]);
+      const senderName = senderRows[0]?.fullName || 'Someone';
+      await db.execute(
+        `INSERT INTO notifications (user_id, message, type) VALUES (?, ?, 'message')`,
+        [receiverId, `${senderName} sent you a message.`]
+      );
+    } catch (notifErr) {
+      console.warn('Notification insertion bypassed:', notifErr.message);
+    }
 
     return res.status(201).json({
       success: true,
       message: 'Message saved successfully.',
       id: result.insertId,
-      data: {
-        id: result.insertId,
-        sender_id: senderId,
-        receiver_id: receiverId,
-        project_id: projectId,
-        message,
-      },
+      data: { id: result.insertId, sender_id: senderId, receiver_id: receiverId, project_id: projectId, message },
     });
   } catch (error) {
     console.error('Error in sendMessage:', error);
@@ -76,15 +69,10 @@ const sendMessage = async (req, res) => {
   }
 };
 
-// GET /api/messages/conversations
-// Returns one row PER (project, other-user) pair
 const getConversations = async (req, res) => {
   try {
     const userId = req.user?.id;
-
-    if (!userId) {
-      return res.status(401).json({ success: false, message: 'Unauthorized user.' });
-    }
+    if (!userId) return res.status(401).json({ success: false, message: 'Unauthorized user.' });
 
     const [rows] = await db.execute(
       `SELECT
@@ -124,4 +112,29 @@ const getConversations = async (req, res) => {
   }
 };
 
-module.exports = { getMessages, sendMessage, getConversations };
+const getMessageCounts = async (req, res) => {
+  try {
+    const userId = req.user?.id;
+    if (!userId) return res.status(401).json({ success: false, message: 'Unauthorized user.' });
+
+    const [[{ unreadMessages }]] = await db.query(
+      `SELECT COUNT(*) AS unreadMessages FROM messages WHERE receiver_id = ? AND is_read = 0`,
+      [userId]
+    );
+
+    const [[{ pendingRequests }]] = await db.query(
+      `SELECT COUNT(*) AS pendingRequests
+       FROM collaborations c
+       JOIN projects p ON c.project_id = p.id
+       WHERE p.user_id = ? AND c.status IN ('pending', 'pending_admin')`,
+      [userId]
+    );
+
+    return res.status(200).json({ success: true, unreadMessages, pendingRequests });
+  } catch (error) {
+    console.error('Error in getMessageCounts:', error);
+    return res.status(500).json({ success: false, message: error.message });
+  }
+};
+
+module.exports = { getMessages, sendMessage, getConversations, getMessageCounts };

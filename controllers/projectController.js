@@ -1,9 +1,14 @@
 ﻿const db = require('../config/db');
 
-// 1. Browse ALL projects with Pagination, Category Filter & Search
+// 1. Browse ALL projects with Pagination, Category Filter, Search & Featured Priority
 exports.getBrowseProjects = async (req, res) => {
   try {
-    console.log('ðŸ”¥ðŸ”¥ðŸ”¥ NEW CODE RUNNING â€” VERSION 2 ðŸ”¥ðŸ”¥ðŸ”¥'); // ðŸŸ¢ TEMPORARY debug marker
+    // Expire ho chuke featured projects ko automatically hata dein
+    await db.query(
+      `UPDATE projects
+       SET is_featured = 0, featured_at = NULL, featured_until = NULL
+       WHERE is_featured = 1 AND featured_until IS NOT NULL AND featured_until < CURDATE()`
+    );
 
     const currentUserId = req.user?.id || req.query.current_user_id || req.query.user_id || 0;
 
@@ -11,11 +16,15 @@ exports.getBrowseProjects = async (req, res) => {
     const limit = Math.max(1, parseInt(req.query.limit, 10) || 6);
     const offset = (page - 1) * limit;
 
-    const { category, search } = req.query;
+    const { category, search, featured } = req.query;
 
-    // ðŸŸ¢ FIX: sirf admin-approved projects hi public Discover page par dikhenge
+    // Sirf admin-approved projects hi public Discover page par dikhenge
     let whereConditions = ["p.status = 'approved'"];
     let queryParams = [];
+
+    if (featured === 'true' || featured === '1') {
+      whereConditions.push('p.is_featured = 1');
+    }
 
     if (category && category !== 'All projects' && category !== 'All') {
       whereConditions.push('(p.category = ? OR p.industry = ?)');
@@ -48,12 +57,10 @@ exports.getBrowseProjects = async (req, res) => {
        LEFT JOIN collaborations c
               ON c.project_id = p.id AND c.sender_id = ?
        ${whereClause}
-       ORDER BY p.created_at DESC
+       ORDER BY p.is_featured DESC, p.featured_at DESC, p.created_at DESC
        LIMIT ${Number(limit)} OFFSET ${Number(offset)}`,
       mainQueryParams
     );
-
-    console.log(`ðŸ”¥ Query returned ${rows.length} rows, WHERE clause: ${whereClause}`); // ðŸŸ¢ TEMPORARY debug marker
 
     res.status(200).json({
       success: true,
@@ -76,7 +83,7 @@ exports.getBrowseProjects = async (req, res) => {
 exports.getMyProjects = async (req, res) => {
   try {
     const [rows] = await db.execute(
-      'SELECT * FROM projects WHERE user_id = ? ORDER BY created_at DESC',
+      'SELECT * FROM projects WHERE user_id = ? ORDER BY is_featured DESC, created_at DESC',
       [req.user.id]
     );
     res.status(200).json({ success: true, data: rows });
@@ -223,7 +230,6 @@ exports.getSavedProjects = async (req, res) => {
     const limit = Math.max(1, parseInt(req.query.limit, 10) || 6);
     const offset = (page - 1) * limit;
 
-    // Query 1: Total saved projects count for this user
     const [countRows] = await db.execute(
       'SELECT COUNT(*) AS total FROM saved_projects WHERE user_id = ?',
       [user_id]
@@ -231,7 +237,6 @@ exports.getSavedProjects = async (req, res) => {
     const totalProjects = countRows[0]?.total || 0;
     const totalPages = Math.ceil(totalProjects / limit) || 1;
 
-    // Query 2: Paginated saved projects
     const [rows] = await db.query(
       `SELECT p.*, sp.created_at AS saved_at 
        FROM saved_projects sp 

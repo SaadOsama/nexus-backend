@@ -1,4 +1,6 @@
-﻿const mysql = require('mysql2/promise');
+// db.js (Backend)
+const mysql = require('mysql2/promise');
+require('dotenv').config();
 
 const db = mysql.createPool({
   host: process.env.DB_HOST || 'localhost',
@@ -13,3 +15,5 @@ const db = mysql.createPool({
 });
 
 module.exports = db;
+
+
