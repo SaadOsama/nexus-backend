@@ -7,6 +7,8 @@ require('dotenv').config();
 // DB import (apne existing db file path ke mutabiq adjust karein agar zaroorat ho)
 const db = require('./config/db');
 
+require('./utils/ensureSchema')();
+
 // BUILD CHECK - confirm naya deployment live hai ya nahi
 console.log('BUILD CHECK v3 (Share + SPA Ready): ' + new Date().toISOString());
 
