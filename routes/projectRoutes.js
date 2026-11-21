@@ -3,7 +3,7 @@ const router = express.Router();
 const db = require('../config/db');
 const { verifyToken } = require('../middleware/authMiddleware');
 const projectController = require('../controllers/projectController');
-const { REVIEW_ACTIONS } = require('../utils/projectRules');
+const { REVIEW_ACTIONS } = require('../utils/ProjectRules');
 
 const MAX_FEATURED_SLOTS = 6;
 

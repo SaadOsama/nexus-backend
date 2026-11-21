@@ -1,5 +1,5 @@
-﻿const db = require('../config/db');
-const { OWNER_EDITABLE, OWNER_DELETABLE, OWNER_SUBMITTABLE } = require('../utils/projectRules');
+const db = require('../config/db');
+const { OWNER_EDITABLE, OWNER_DELETABLE, OWNER_SUBMITTABLE } = require('../utils/ProjectRules');
 
 const toList = (v) =>
   String(v || '')

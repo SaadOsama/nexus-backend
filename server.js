@@ -17,6 +17,8 @@ const collaborationRoutes = require('./routes/collaborationRoutes');
 const messageRoutes = require('./routes/messageRoutes');
 const notificationRoutes = require('./routes/notificationRoutes');
 
+const adminUsersRoutes = require('./routes/adminUsers');
+
 const app = express();
 
 const FRONTEND_URL = (
@@ -171,6 +173,7 @@ app.get('/api/health', (req, res) => {
 safeMount('/api/auth', authRoutes, 'authRoutes');
 safeMount('/api/projects', projectRoutes, 'projectRoutes');
 safeMount('/api/collaborations', collaborationRoutes, 'collaborationRoutes');
+safeMount('/api/admin', adminUsersRoutes, 'adminUsersRoutes');
 safeMount('/api/messages', messageRoutes, 'messageRoutes');
 safeMount('/api/notifications', notificationRoutes, 'notificationRoutes');
 
@@ -246,6 +249,8 @@ io.on('connection', (socket) => {
       console.log(`Dispatched message to room user_${receiverId}`);
     }
   });
+
+  
 
   socket.on('disconnect', () => {
     for (const [userId, socketId] of onlineUsers.entries()) {
