@@ -1,4 +1,4 @@
-const db = require('../config/db');
+﻿const db = require('../config/db');
 const { OWNER_EDITABLE, OWNER_DELETABLE, OWNER_SUBMITTABLE } = require('../utils/ProjectRules');
 
 const toList = (v) =>
@@ -44,7 +44,7 @@ exports.getBrowseProjects = async (req, res) => {
     const industries = toList(req.query.industry || req.query.category);
     const stages = toList(req.query.stage);
 
-    const where = ["p.status = 'approved'"];
+    const where = ["p.status = 'approved'", "p.user_id NOT IN (SELECT id FROM users WHERE is_suspended = 1)"];
     const params = [];
 
     if (featured === 'true' || featured === '1') where.push('p.is_featured = 1');
@@ -389,7 +389,7 @@ exports.getSavedProjects = async (req, res) => {
     const [countRows] = await db.execute(
       `SELECT COUNT(*) AS total
        FROM saved_projects sp JOIN projects p ON sp.project_id = p.id
-       WHERE sp.user_id = ? AND p.status = 'approved'`,
+       WHERE sp.user_id = ? AND p.status = 'approved' AND p.user_id NOT IN (SELECT id FROM users WHERE is_suspended = 1)`,
       [user_id]
     );
     const totalProjects = countRows[0]?.total || 0;
@@ -399,7 +399,7 @@ exports.getSavedProjects = async (req, res) => {
       `SELECT p.*, sp.created_at AS saved_at
        FROM saved_projects sp
        JOIN projects p ON sp.project_id = p.id
-       WHERE sp.user_id = ? AND p.status = 'approved'
+       WHERE sp.user_id = ? AND p.status = 'approved' AND p.user_id NOT IN (SELECT id FROM users WHERE is_suspended = 1)
        ORDER BY sp.created_at DESC
        LIMIT ${Number(limit)} OFFSET ${Number(offset)}`,
       [user_id]

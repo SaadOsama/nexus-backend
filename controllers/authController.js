@@ -3,6 +3,8 @@ const bcrypt = require('bcryptjs');
 const jwt = require('jsonwebtoken');
 const { JWT_SECRET, JWT_EXPIRES_IN } = require('../config/jwt');
 
+const SUSPENDED_MSG = 'Your account is suspended. Contact the Nexus team.';
+
 // Signup Controller
 exports.signup = async (req, res) => {
   try {
@@ -101,6 +103,14 @@ exports.login = async (req, res) => {
       return res.status(400).json({ message: 'Invalid credentials.' });
     }
 
+    // Suspended user sign in nahi kar sakta
+    if (user.is_suspended) {
+      return res.status(403).json({
+        success: false,
+        message: SUSPENDED_MSG
+      });
+    }
+
     const token = jwt.sign(
       { id: user.id, email: user.email, role: user.role },
       JWT_SECRET,
@@ -129,8 +139,8 @@ exports.login = async (req, res) => {
   }
 };
 
-// Middleware: Verify Token
-exports.verifyToken = (req, res, next) => {
+// Middleware: Verify Token (suspended user ka purana token bhi reject)
+exports.verifyToken = async (req, res, next) => {
   const authHeader = req.headers.authorization || req.headers.Authorization;
 
   if (!authHeader || !authHeader.startsWith('Bearer ')) {
@@ -143,14 +153,31 @@ exports.verifyToken = (req, res, next) => {
     return res.status(401).json({ success: false, message: 'Token string missing.' });
   }
 
+  let decoded;
   try {
-    const decoded = jwt.verify(token, JWT_SECRET);
-    req.user = decoded;
-    next();
+    decoded = jwt.verify(token, JWT_SECRET);
   } catch (err) {
     console.error('❌ JWT Verification Error:', err.message);
     return res.status(401).json({ success: false, message: 'Invalid or expired token.' });
   }
+
+  try {
+    if (decoded.role !== 'admin') {
+      const [rows] = await db.query('SELECT is_suspended FROM users WHERE id = ?', [decoded.id]);
+      if (rows.length && rows[0].is_suspended) {
+        return res.status(401).json({
+          success: false,
+          code: 'ACCOUNT_SUSPENDED',
+          message: SUSPENDED_MSG
+        });
+      }
+    }
+  } catch (err) {
+    console.error('Suspension check failed:', err.message);
+  }
+
+  req.user = decoded;
+  next();
 };
 
 exports.requireRole = (...roles) => (req, res, next) => {
