@@ -3,10 +3,11 @@ const router = express.Router();
 const db = require('../config/db');
 const { verifyToken } = require('../middleware/authMiddleware');
 const projectController = require('../controllers/projectController');
+const { REVIEW_ACTIONS } = require('../utils/projectRules');
 
 const MAX_FEATURED_SLOTS = 6;
 
-// Admin-only guard, same pattern jo collaborationRoutes me hai
+// Admin-only guard
 const verifyAdmin = (req, res, next) => {
   if (req.user?.role !== 'admin') {
     return res.status(403).json({ success: false, message: 'Access denied. Admin only.' });
@@ -22,22 +23,18 @@ const clearExpiredFeatured = (executor = db) =>
      WHERE is_featured = 1 AND featured_until IS NOT NULL AND featured_until < CURDATE()`
   );
 
-// GET /api/projects — sirf approved projects (featured pehle)
+// GET /api/projects: sirf approved projects (featured pehle)
 router.get('/', projectController.getBrowseProjects);
 
-// Saved Projects Routes
+// Saved Projects
 router.post('/save', verifyToken, projectController.saveProject);
 router.post('/unsave', verifyToken, projectController.unsaveProject);
 router.get('/saved', verifyToken, projectController.getSavedProjects);
 
-// GET /api/projects/mine
+// GET /api/projects/mine: sirf apne projects (drafts samet), admin_response card par dikhane ke liye
 router.get('/mine', verifyToken, async (req, res) => {
   try {
-    const userId = req.user?.id || req.query.user_id;
-
-    if (!userId) {
-      return res.status(400).json({ success: false, message: 'User ID is required' });
-    }
+    const userId = req.user.id;
 
     const page = Math.max(1, parseInt(req.query.page, 10) || 1);
     const limit = Math.max(1, parseInt(req.query.limit, 10) || 6);
@@ -50,20 +47,18 @@ router.get('/mine', verifyToken, async (req, res) => {
     const totalProjects = countRows[0]?.total || 0;
     const totalPages = Math.ceil(totalProjects / limit);
 
-    const query = `
-      SELECT 
-        p.*,
-        1 AS isOwner,
-        CASE WHEN c.id IS NOT NULL THEN 1 ELSE 0 END AS hasRequested
-      FROM projects p
-      LEFT JOIN collaborations c 
-        ON c.project_id = p.id AND c.sender_id = ?
-      WHERE p.user_id = ?
-      ORDER BY p.is_featured DESC, p.created_at DESC
-      LIMIT ${Number(limit)} OFFSET ${Number(offset)}
-    `;
-
-    const [rows] = await db.query(query, [userId, userId]);
+    const [rows] = await db.query(
+      `SELECT p.*,
+              1 AS isOwner,
+              CASE WHEN c.id IS NOT NULL THEN 1 ELSE 0 END AS hasRequested
+       FROM projects p
+       LEFT JOIN collaborations c
+         ON c.project_id = p.id AND c.sender_id = ?
+       WHERE p.user_id = ?
+       ORDER BY p.is_featured DESC, p.created_at DESC
+       LIMIT ${Number(limit)} OFFSET ${Number(offset)}`,
+      [userId, userId]
+    );
 
     res.json({
       success: true,
@@ -79,65 +74,12 @@ router.get('/mine', verifyToken, async (req, res) => {
   }
 });
 
-// verifyToken required hai, aur project hamesha 'pending' status se banta hai
-const createProject = async (req, res) => {
-  try {
-    const user_id = req.user.id;
-    const {
-      title, description, category, industry, stage,
-      location, looking_for, match_score, tags,
-    } = req.body;
-
-    if (!title || !description) {
-      return res.status(400).json({
-        success: false,
-        message: 'Title and description are required.',
-      });
-    }
-
-    const tagsJson = Array.isArray(tags) ? JSON.stringify(tags) : JSON.stringify([]);
-
-    const query = `
-      INSERT INTO projects (user_id, title, description, category, industry, stage, location, looking_for, match_score, tags, status) 
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'pending')
-    `;
-
-    const [result] = await db.execute(query, [
-      user_id, title, description, category || null, industry || null,
-      stage || null, location || null, looking_for || null, match_score || 90, tagsJson,
-    ]);
-
-    // notify all admins that a project needs review
-    try {
-      const [admins] = await db.query(`SELECT id FROM users WHERE role = 'admin'`);
-      if (admins.length > 0) {
-        const notifValues = admins.map((a) => [
-          a.id,
-          `New project "${title}" was submitted and is awaiting your review.`,
-          'project',
-        ]);
-        await db.query(`INSERT INTO notifications (user_id, message, type) VALUES ?`, [notifValues]);
-      }
-    } catch (notifErr) {
-      console.warn('Admin notification insertion bypassed:', notifErr.message);
-    }
-
-    res.status(201).json({
-      success: true,
-      message: 'Project submitted for admin review!',
-      projectId: result.insertId,
-    });
-  } catch (err) {
-    console.error('Error creating project:', err);
-    res.status(500).json({ success: false, message: 'Server Error: ' + err.message });
-  }
-};
-
-router.post('/', verifyToken, createProject);
-router.post('/publish', verifyToken, createProject);
+// Create (draft ya submit): controller wala
+router.post('/', verifyToken, projectController.createProject);
+router.post('/publish', verifyToken, projectController.createProject);
 
 // ==========================================
-// ADMIN — All projects list (with status filter & pagination)
+// ADMIN: All projects list (drafts nahi dikhte)
 // GET /api/projects/admin/all?status=all&page=1&limit=100
 // ==========================================
 router.get('/admin/all', verifyToken, verifyAdmin, async (req, res) => {
@@ -150,9 +92,9 @@ router.get('/admin/all', verifyToken, verifyAdmin, async (req, res) => {
     const offset = (page - 1) * limit;
 
     const params = [];
-    let whereSql = '';
+    let whereSql = "WHERE p.status <> 'draft'";
 
-    if (['pending', 'approved', 'rejected'].includes(status)) {
+    if (['pending', 'approved', 'rejected', 'changes_requested'].includes(status)) {
       whereSql = 'WHERE p.status = ?';
       params.push(status);
     }
@@ -197,18 +139,17 @@ router.get('/admin/all', verifyToken, verifyAdmin, async (req, res) => {
 });
 
 // ==========================================
-// ADMIN — Simple toggle (purana route, rehne diya)
+// ADMIN: Simple toggle (purana route, rehne diya)
 // PATCH /api/projects/admin/feature/:id
 // ==========================================
 router.patch('/admin/feature/:id', verifyToken, verifyAdmin, async (req, res) => {
+  const projectId = Number(req.params.id);
+  if (!Number.isInteger(projectId) || projectId <= 0) {
+    return res.status(400).json({ success: false, message: 'Invalid project ID.' });
+  }
+
   const conn = await db.getConnection();
   try {
-    const projectId = Number(req.params.id);
-    if (!Number.isInteger(projectId) || projectId <= 0) {
-      conn.release();
-      return res.status(400).json({ success: false, message: 'Invalid project ID.' });
-    }
-
     await conn.beginTransaction();
     await clearExpiredFeatured(conn);
 
@@ -279,9 +220,8 @@ router.patch('/admin/feature/:id', verifyToken, verifyAdmin, async (req, res) =>
 });
 
 // ==========================================
-// ADMIN — Set/Toggle Featured (+ optional expiry date, max 6 active)
+// ADMIN: Set/Toggle Featured (+ optional expiry date, max 6 active)
 // PATCH /api/projects/admin/featured/:id   body: { featured, featured_until }
-// (Frontend AdminOverview.jsx yehi route use karta hai)
 // ==========================================
 router.patch('/admin/featured/:id', verifyToken, verifyAdmin, async (req, res) => {
   const projectId = Number(req.params.id);
@@ -292,8 +232,6 @@ router.patch('/admin/featured/:id', verifyToken, verifyAdmin, async (req, res) =
   const conn = await db.getConnection();
   try {
     await conn.beginTransaction();
-
-    // expire ho chuke featured pehle saaf karein taake slot count sahi ho
     await clearExpiredFeatured(conn);
 
     const [[project]] = await conn.query(
@@ -368,7 +306,7 @@ router.patch('/admin/featured/:id', verifyToken, verifyAdmin, async (req, res) =
 });
 
 // ==========================================
-// ADMIN — Pending projects queue
+// ADMIN: Pending queue (resubmitted project sab se upar)
 // GET /api/projects/admin/pending
 // ==========================================
 router.get('/admin/pending', verifyToken, verifyAdmin, async (req, res) => {
@@ -378,7 +316,7 @@ router.get('/admin/pending', verifyToken, verifyAdmin, async (req, res) => {
        FROM projects p
        JOIN users u ON p.user_id = u.id
        WHERE p.status = 'pending'
-       ORDER BY p.created_at DESC`
+       ORDER BY p.submitted_at DESC, p.id DESC`
     );
     res.json({ success: true, data: rows });
   } catch (err) {
@@ -388,7 +326,7 @@ router.get('/admin/pending', verifyToken, verifyAdmin, async (req, res) => {
 });
 
 // ==========================================
-// ADMIN — Dynamic dashboard stats + recent activity
+// ADMIN: Dashboard stats + recent activity
 // GET /api/projects/admin/stats
 // ==========================================
 router.get('/admin/stats', verifyToken, verifyAdmin, async (req, res) => {
@@ -453,57 +391,123 @@ router.get('/admin/stats', verifyToken, verifyAdmin, async (req, res) => {
 });
 
 // ==========================================
-// ADMIN — Approve / Reject a project (+ notification)
-// POST /api/projects/admin/action/:id   body: { action: 'approve'|'reject', adminNote }
+// ADMIN: Review decision
+// POST /api/projects/admin/action/:id
+// body: { action: 'approve' | 'request_changes' | 'reject', adminNote }
 // ==========================================
 router.post('/admin/action/:id', verifyToken, verifyAdmin, async (req, res) => {
-  try {
-    const { id } = req.params;
-    const actionInput = req.body.action;
-    const adminNote = req.body.adminNote || req.body.adminMessage || '';
-    const isAccept = actionInput === 'approve' || actionInput === 'accepted' || actionInput === 'approved';
-    const newStatus = isAccept ? 'approved' : 'rejected';
-    const adminId = req.user?.id || null;
+  const projectId = Number(req.params.id);
+  if (!Number.isInteger(projectId) || projectId <= 0) {
+    return res.status(400).json({ success: false, message: 'Invalid project ID.' });
+  }
 
-    const [projRows] = await db.query('SELECT user_id, title FROM projects WHERE id = ?', [id]);
-    if (projRows.length === 0) {
+  // purane frontend ke naam bhi chalte hain
+  let action = req.body.action;
+  if (action === 'accepted' || action === 'approved') action = 'approve';
+  if (action === 'rejected') action = 'reject';
+
+  const newStatus = REVIEW_ACTIONS[action];
+  if (!newStatus) {
+    return res.status(400).json({ success: false, message: 'Invalid action.' });
+  }
+
+  const note = String(req.body.adminNote ?? req.body.adminMessage ?? req.body.note ?? '').trim();
+  if (action !== 'approve' && !note) {
+    return res.status(400).json({ success: false, message: 'A note is required for this action.' });
+  }
+
+  const adminId = req.user.id;
+  const conn = await db.getConnection();
+  try {
+    await conn.beginTransaction();
+
+    const [[project]] = await conn.query(
+      'SELECT id, user_id, title, status FROM projects WHERE id = ? FOR UPDATE',
+      [projectId]
+    );
+    if (!project) {
+      await conn.rollback();
       return res.status(404).json({ success: false, message: 'Project not found.' });
     }
-    const { user_id: ownerId, title } = projRows[0];
+    if (project.status !== 'pending') {
+      await conn.rollback();
+      return res.status(409).json({ success: false, message: 'This project is not awaiting review.' });
+    }
 
-    // Agar project reject ho raha hai to featured bhi off kar dein
-    const featureSqlPart = !isAccept
-      ? ', is_featured = 0, featured_at = NULL, featured_until = NULL'
-      : '';
+    const clearFeatured = action === 'approve'
+      ? ''
+      : ', is_featured = 0, featured_at = NULL, featured_until = NULL';
 
-    await db.execute(
+    await conn.query(
       `UPDATE projects
-       SET status = ?, admin_response = ?, reviewed_by = ?, reviewed_at = NOW()${featureSqlPart}
+       SET status = ?, admin_response = ?, reviewed_by = ?, reviewed_at = NOW()${clearFeatured}
        WHERE id = ?`,
-      [newStatus, adminNote, adminId, id]
+      [newStatus, note, adminId, projectId]
     );
 
-    let notifMessage = isAccept
-      ? `Your project "${title}" has been APPROVED and is now live on Discover.`
-      : `Your project "${title}" was REJECTED by Admin.`;
-    if (adminNote.trim()) {
-      notifMessage += ` Admin Note: ${adminNote}`;
+    await conn.query(
+      `INSERT INTO project_reviews (project_id, admin_id, action, note) VALUES (?, ?, ?, ?)`,
+      [projectId, adminId, action, note || null]
+    );
+
+    let message;
+    if (action === 'approve') {
+      message = `Your project "${project.title}" has been APPROVED and is now live on Discover.`;
+      if (note) message += ` Admin note: ${note}`;
+    } else if (action === 'request_changes') {
+      message = `Changes were requested on your project "${project.title}". Admin note: ${note}`;
+    } else {
+      message = `Your project "${project.title}" was REJECTED. Admin note: ${note}`;
     }
 
-    try {
-      await db.execute(
-        `INSERT INTO notifications (user_id, message, type) VALUES (?, ?, 'project')`,
-        [ownerId, notifMessage]
-      );
-    } catch (notifErr) {
-      console.warn('Notification insertion bypassed:', notifErr.message);
-    }
+    await conn.query(
+      `INSERT INTO notifications (user_id, project_id, message, type) VALUES (?, ?, ?, 'project')`,
+      [project.user_id, projectId, message]
+    );
 
-    res.json({ success: true, message: `Project ${isAccept ? 'approved' : 'rejected'} successfully!` });
+    await conn.commit();
+    res.json({ success: true, message: 'Decision saved.', status: newStatus });
   } catch (err) {
+    await conn.rollback();
     console.error('Error in project admin action:', err);
+    res.status(500).json({ success: false, message: 'Server Error: ' + err.message });
+  } finally {
+    conn.release();
+  }
+});
+
+// ==========================================
+// ADMIN: Review history (who, what, note, time), newest first
+// GET /api/projects/admin/history/:id
+// ==========================================
+router.get('/admin/history/:id', verifyToken, verifyAdmin, async (req, res) => {
+  try {
+    const projectId = Number(req.params.id);
+    if (!Number.isInteger(projectId) || projectId <= 0) {
+      return res.status(400).json({ success: false, message: 'Invalid project ID.' });
+    }
+
+    const [rows] = await db.query(
+      `SELECT r.id, r.action, r.note, r.created_at, r.admin_id, u.fullName AS adminName
+       FROM project_reviews r
+       LEFT JOIN users u ON u.id = r.admin_id
+       WHERE r.project_id = ?
+       ORDER BY r.created_at DESC, r.id DESC`,
+      [projectId]
+    );
+    res.json({ success: true, data: rows });
+  } catch (err) {
+    console.error('Error fetching review history:', err);
     res.status(500).json({ success: false, message: 'Server Error: ' + err.message });
   }
 });
+
+// ==========================================
+// Owner routes: /:id wale routes HAMESHA file ke aakhir mein
+// ==========================================
+router.get('/:id', verifyToken, projectController.getProjectById);
+router.put('/:id', verifyToken, projectController.updateProject);
+router.delete('/:id', verifyToken, projectController.deleteProject);
+router.post('/:id/submit', verifyToken, projectController.submitProject);
 
 module.exports = router;

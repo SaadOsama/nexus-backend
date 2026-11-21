@@ -1,9 +1,33 @@
 ﻿const db = require('../config/db');
+const { OWNER_EDITABLE, OWNER_DELETABLE, OWNER_SUBMITTABLE } = require('../utils/projectRules');
 
-// 1. Browse ALL projects with Pagination, Category Filter, Search & Featured Priority
+const toList = (v) =>
+  String(v || '')
+    .split(',')
+    .map((s) => s.trim())
+    .filter(Boolean);
+
+// Sab admins ko "project review ke liye aaya" notification
+const notifyAdmins = async (projectId, title, resubmitted = false) => {
+  try {
+    const [admins] = await db.query(`SELECT id FROM users WHERE role = 'admin'`);
+    if (!admins.length) return;
+    const msg = resubmitted
+      ? `Project "${title}" was updated and resubmitted for review.`
+      : `New project "${title}" was submitted and is awaiting your review.`;
+    const values = admins.map((a) => [a.id, projectId, msg, 'project']);
+    await db.query(
+      `INSERT INTO notifications (user_id, project_id, message, type) VALUES ?`,
+      [values]
+    );
+  } catch (e) {
+    console.warn('Admin notification skipped:', e.message);
+  }
+};
+
+// 1. Browse ALL approved projects: search, filters, sort, pagination
 exports.getBrowseProjects = async (req, res) => {
   try {
-    // Expire ho chuke featured projects ko automatically hata dein
     await db.query(
       `UPDATE projects
        SET is_featured = 0, featured_at = NULL, featured_until = NULL
@@ -13,40 +37,60 @@ exports.getBrowseProjects = async (req, res) => {
     const currentUserId = req.user?.id || req.query.current_user_id || req.query.user_id || 0;
 
     const page = Math.max(1, parseInt(req.query.page, 10) || 1);
-    const limit = Math.max(1, parseInt(req.query.limit, 10) || 6);
+    const limit = Math.min(50, Math.max(1, parseInt(req.query.limit, 10) || 6));
     const offset = (page - 1) * limit;
 
-    const { category, search, featured } = req.query;
+    const { search, q, featured, country, funding, sort } = req.query;
+    const industries = toList(req.query.industry || req.query.category);
+    const stages = toList(req.query.stage);
 
-    // Sirf admin-approved projects hi public Discover page par dikhenge
-    let whereConditions = ["p.status = 'approved'"];
-    let queryParams = [];
+    const where = ["p.status = 'approved'"];
+    const params = [];
 
-    if (featured === 'true' || featured === '1') {
-      whereConditions.push('p.is_featured = 1');
+    if (featured === 'true' || featured === '1') where.push('p.is_featured = 1');
+
+    const realIndustries = industries.filter((i) => i !== 'All projects' && i !== 'All');
+    if (realIndustries.length) {
+      where.push('(p.category IN (?) OR p.industry IN (?))');
+      params.push(realIndustries, realIndustries);
     }
 
-    if (category && category !== 'All projects' && category !== 'All') {
-      whereConditions.push('(p.category = ? OR p.industry = ?)');
-      queryParams.push(category, category);
+    if (stages.length) {
+      where.push('p.stage IN (?)');
+      params.push(stages);
     }
 
-    if (search && search.trim() !== '') {
-      whereConditions.push('(p.title LIKE ? OR p.description LIKE ? OR p.tags LIKE ?)');
-      const searchTerm = `%${search.trim()}%`;
-      queryParams.push(searchTerm, searchTerm, searchTerm);
+    if (country && country.trim()) {
+      where.push('p.location = ?');
+      params.push(country.trim());
     }
 
-    const whereClause = `WHERE ${whereConditions.join(' AND ')}`;
+    if (funding && funding.trim()) {
+      where.push('p.funding_requirement = ?');
+      params.push(funding.trim());
+    }
+
+    const keyword = (q || search || '').trim();
+    if (keyword) {
+      where.push(
+        '(p.title LIKE ? OR p.description LIKE ? OR p.tags LIKE ? OR p.looking_for LIKE ?)'
+      );
+      const term = `%${keyword}%`;
+      params.push(term, term, term, term);
+    }
+
+    const whereClause = `WHERE ${where.join(' AND ')}`;
+
+    let orderBy = 'p.is_featured DESC, p.featured_at DESC, p.created_at DESC';
+    if (sort === 'newest') orderBy = 'p.created_at DESC';
+    if (sort === 'az') orderBy = 'p.title ASC, p.created_at DESC';
 
     const [countRows] = await db.query(
       `SELECT COUNT(*) AS total FROM projects p ${whereClause}`,
-      queryParams
+      params
     );
     const totalProjects = countRows[0]?.total || 0;
     const totalPages = Math.ceil(totalProjects / limit) || 1;
-
-    const mainQueryParams = [currentUserId, currentUserId, ...queryParams];
 
     const [rows] = await db.query(
       `SELECT p.*,
@@ -57,9 +101,9 @@ exports.getBrowseProjects = async (req, res) => {
        LEFT JOIN collaborations c
               ON c.project_id = p.id AND c.sender_id = ?
        ${whereClause}
-       ORDER BY p.is_featured DESC, p.featured_at DESC, p.created_at DESC
+       ORDER BY ${orderBy}
        LIMIT ${Number(limit)} OFFSET ${Number(offset)}`,
-      mainQueryParams
+      [currentUserId, currentUserId, ...params]
     );
 
     res.status(200).json({
@@ -71,15 +115,29 @@ exports.getBrowseProjects = async (req, res) => {
         currentPage: page,
         limit,
         hasNextPage: page < totalPages,
-        hasPrevPage: page > 1
-      }
+        hasPrevPage: page > 1,
+      },
     });
   } catch (error) {
     res.status(500).json({ success: false, message: 'Server Error: ' + error.message });
   }
 };
 
-// 2. Only the logged-in user's own projects
+// Country dropdown: approved projects ki distinct locations
+exports.getFilterOptions = async (req, res) => {
+  try {
+    const [rows] = await db.query(
+      `SELECT DISTINCT location FROM projects
+       WHERE status = 'approved' AND location IS NOT NULL AND location <> ''
+       ORDER BY location ASC`
+    );
+    res.json({ success: true, countries: rows.map((r) => r.location) });
+  } catch (error) {
+    res.status(500).json({ success: false, message: 'Server Error: ' + error.message });
+  }
+};
+
+// 2. Sirf logged-in user ke apne projects (drafts samet)
 exports.getMyProjects = async (req, res) => {
   try {
     const [rows] = await db.execute(
@@ -92,62 +150,116 @@ exports.getMyProjects = async (req, res) => {
   }
 };
 
-// 3. Create Project
+// 3. Create: saveAsDraft=true to draft, warna seedha review ke liye pending
 exports.createProject = async (req, res) => {
   try {
     const user_id = req.user.id;
-    const { title, description, category, industry, stage, location, looking_for, match_score, tags } = req.body;
+    const {
+      title, description, category, industry, stage, location,
+      looking_for, funding_requirement, match_score, tags, saveAsDraft,
+    } = req.body;
 
-    if (!title || !description) {
+    const isDraft = saveAsDraft === true || saveAsDraft === 'true';
+
+    if (!title || !String(title).trim()) {
+      return res.status(400).json({ success: false, message: 'Title is required.' });
+    }
+    if (!isDraft && (!description || !String(description).trim())) {
       return res.status(400).json({ success: false, message: 'Title and description are required.' });
     }
 
-    const tagsJson = tags ? JSON.stringify(tags) : JSON.stringify([]);
+    const tagsJson = Array.isArray(tags) ? JSON.stringify(tags) : JSON.stringify([]);
+    const status = isDraft ? 'draft' : 'pending';
 
     const [result] = await db.execute(
-      `INSERT INTO projects (user_id, title, description, category, industry, stage, location, looking_for, match_score, tags, status) 
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'pending')`,
-      [user_id, title, description, category || null, industry || null, stage || null, location || null, looking_for || null, match_score || 90, tagsJson]
+      `INSERT INTO projects
+        (user_id, title, description, category, industry, stage, location, looking_for,
+         funding_requirement, match_score, tags, status, submitted_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ${isDraft ? 'NULL' : 'NOW()'})`,
+      [
+        user_id, String(title).trim(), description || '', category || null, industry || null,
+        stage || null, location || null, looking_for || null, funding_requirement || null,
+        match_score || 90, tagsJson, status,
+      ]
     );
+
+    if (!isDraft) await notifyAdmins(result.insertId, String(title).trim());
 
     res.status(201).json({
       success: true,
-      message: 'Project created successfully!',
-      projectId: result.insertId
+      message: isDraft ? 'Draft saved.' : 'Project submitted for admin review!',
+      projectId: result.insertId,
+      status,
     });
   } catch (error) {
     res.status(500).json({ success: false, message: 'Server Error: ' + error.message });
   }
 };
 
-// 4. Update Project
-exports.updateProject = async (req, res) => {
+// Read: owner, ya admin (admin ko draft nahi dikhta). Baqi sab ko 404
+exports.getProjectById = async (req, res) => {
   try {
-    const { id } = req.params;
-    const { title, description, category, industry, stage, location, looking_for, tags } = req.body;
-
-    const [existing] = await db.execute('SELECT user_id FROM projects WHERE id = ?', [id]);
-    if (existing.length === 0) {
+    const id = Number(req.params.id);
+    if (!Number.isInteger(id) || id <= 0) {
       return res.status(404).json({ success: false, message: 'Project not found.' });
     }
-    if (existing[0].user_id !== req.user.id) {
-      return res.status(403).json({ success: false, message: 'You can only edit your own projects.' });
+
+    const [rows] = await db.execute(
+      `SELECT p.*, u.fullName AS ownerName
+       FROM projects p LEFT JOIN users u ON u.id = p.user_id
+       WHERE p.id = ?`,
+      [id]
+    );
+    const project = rows[0];
+    const isOwner = project && Number(project.user_id) === Number(req.user.id);
+    const isAdmin = req.user.role === 'admin' && project && project.status !== 'draft';
+
+    if (!project || !(isOwner || isAdmin)) {
+      return res.status(404).json({ success: false, message: 'Project not found.' });
+    }
+    res.json({ success: true, data: project });
+  } catch (error) {
+    res.status(500).json({ success: false, message: 'Server Error: ' + error.message });
+  }
+};
+
+// 4. Update: sirf owner, sirf draft ya changes_requested mein
+exports.updateProject = async (req, res) => {
+  try {
+    const id = Number(req.params.id);
+    const {
+      title, description, category, industry, stage, location,
+      looking_for, funding_requirement, tags,
+    } = req.body;
+
+    const [existing] = await db.execute('SELECT user_id, status FROM projects WHERE id = ?', [id]);
+    if (!existing.length || Number(existing[0].user_id) !== Number(req.user.id)) {
+      return res.status(404).json({ success: false, message: 'Project not found.' });
+    }
+    if (!OWNER_EDITABLE.includes(existing[0].status)) {
+      return res.status(409).json({ success: false, message: 'This project can no longer be edited.' });
     }
 
-    const tagsJson = tags ? JSON.stringify(tags) : null;
+    const tagsJson = Array.isArray(tags) ? JSON.stringify(tags) : null;
 
+    // status aur user_id body se kabhi nahi liye jate
     await db.execute(
-      `UPDATE projects 
-       SET title = COALESCE(?, title), 
-           description = COALESCE(?, description), 
-           category = COALESCE(?, category), 
-           industry = COALESCE(?, industry), 
-           stage = COALESCE(?, stage), 
-           location = COALESCE(?, location), 
-           looking_for = COALESCE(?, looking_for), 
-           tags = COALESCE(?, tags) 
-       WHERE id = ?`,
-      [title || null, description || null, category || null, industry || null, stage || null, location || null, looking_for || null, tagsJson, id]
+      `UPDATE projects
+       SET title = COALESCE(?, title),
+           description = COALESCE(?, description),
+           category = COALESCE(?, category),
+           industry = COALESCE(?, industry),
+           stage = COALESCE(?, stage),
+           location = COALESCE(?, location),
+           looking_for = COALESCE(?, looking_for),
+           funding_requirement = COALESCE(?, funding_requirement),
+           tags = COALESCE(?, tags)
+       WHERE id = ? AND user_id = ? AND status IN ('draft','changes_requested')`,
+      [
+        title || null, description || null, category || null, industry || null, stage || null,
+        location || null, looking_for || null, funding_requirement || null, tagsJson,
+        id, req.user.id,
+      ]
     );
 
     res.status(200).json({ success: true, message: 'Project updated successfully!' });
@@ -156,27 +268,66 @@ exports.updateProject = async (req, res) => {
   }
 };
 
-// 5. Delete Project
+// 5. Delete: sirf owner, sirf draft
 exports.deleteProject = async (req, res) => {
   try {
-    const { id } = req.params;
+    const id = Number(req.params.id);
 
-    const [existing] = await db.execute('SELECT user_id FROM projects WHERE id = ?', [id]);
-    if (existing.length === 0) {
+    const [existing] = await db.execute('SELECT user_id, status FROM projects WHERE id = ?', [id]);
+    if (!existing.length || Number(existing[0].user_id) !== Number(req.user.id)) {
       return res.status(404).json({ success: false, message: 'Project not found.' });
     }
-    if (existing[0].user_id !== req.user.id) {
-      return res.status(403).json({ success: false, message: 'You can only delete your own projects.' });
+    if (!OWNER_DELETABLE.includes(existing[0].status)) {
+      return res.status(409).json({ success: false, message: 'Only drafts can be deleted.' });
     }
 
-    await db.execute('DELETE FROM projects WHERE id = ?', [id]);
-    res.status(200).json({ success: true, message: 'Project deleted successfully!' });
+    await db.execute(
+      `DELETE FROM projects WHERE id = ? AND user_id = ? AND status = 'draft'`,
+      [id, req.user.id]
+    );
+    res.status(200).json({ success: true, message: 'Draft deleted successfully!' });
   } catch (error) {
     res.status(500).json({ success: false, message: 'Server Error: ' + error.message });
   }
 };
 
-// 6. Save Project
+// Submit / Resubmit: draft ya changes_requested se pending, submitted_at = abhi
+exports.submitProject = async (req, res) => {
+  try {
+    const id = Number(req.params.id);
+
+    const [existing] = await db.execute(
+      'SELECT user_id, status, title, description FROM projects WHERE id = ?',
+      [id]
+    );
+    if (!existing.length || Number(existing[0].user_id) !== Number(req.user.id)) {
+      return res.status(404).json({ success: false, message: 'Project not found.' });
+    }
+    const p = existing[0];
+    if (!OWNER_SUBMITTABLE.includes(p.status)) {
+      return res.status(409).json({ success: false, message: 'This project cannot be submitted in its current state.' });
+    }
+    if (!p.title?.trim() || !p.description?.trim()) {
+      return res.status(400).json({ success: false, message: 'Title and description are required before submitting.' });
+    }
+
+    const [result] = await db.execute(
+      `UPDATE projects SET status = 'pending', submitted_at = NOW()
+       WHERE id = ? AND user_id = ? AND status IN ('draft','changes_requested')`,
+      [id, req.user.id]
+    );
+    if (result.affectedRows === 0) {
+      return res.status(409).json({ success: false, message: 'This project cannot be submitted in its current state.' });
+    }
+
+    await notifyAdmins(id, p.title, p.status === 'changes_requested');
+    res.json({ success: true, message: 'Project submitted for review.' });
+  } catch (error) {
+    res.status(500).json({ success: false, message: 'Server Error: ' + error.message });
+  }
+};
+
+// 6. Save Project: sirf approved project save ho sakta hai
 exports.saveProject = async (req, res) => {
   try {
     const user_id = req.user.id;
@@ -184,6 +335,11 @@ exports.saveProject = async (req, res) => {
 
     if (!project_id) {
       return res.status(400).json({ success: false, message: 'project_id is required.' });
+    }
+
+    const [proj] = await db.execute('SELECT status FROM projects WHERE id = ?', [project_id]);
+    if (!proj.length || proj[0].status !== 'approved') {
+      return res.status(404).json({ success: false, message: 'Project not found.' });
     }
 
     await db.execute(
@@ -221,7 +377,7 @@ exports.unsaveProject = async (req, res) => {
   }
 };
 
-// 8. Get Saved Projects (with pagination)
+// 8. Saved Projects (sirf approved, pagination ke saath)
 exports.getSavedProjects = async (req, res) => {
   try {
     const user_id = req.user.id;
@@ -231,17 +387,19 @@ exports.getSavedProjects = async (req, res) => {
     const offset = (page - 1) * limit;
 
     const [countRows] = await db.execute(
-      'SELECT COUNT(*) AS total FROM saved_projects WHERE user_id = ?',
+      `SELECT COUNT(*) AS total
+       FROM saved_projects sp JOIN projects p ON sp.project_id = p.id
+       WHERE sp.user_id = ? AND p.status = 'approved'`,
       [user_id]
     );
     const totalProjects = countRows[0]?.total || 0;
     const totalPages = Math.ceil(totalProjects / limit) || 1;
 
     const [rows] = await db.query(
-      `SELECT p.*, sp.created_at AS saved_at 
-       FROM saved_projects sp 
-       JOIN projects p ON sp.project_id = p.id 
-       WHERE sp.user_id = ? 
+      `SELECT p.*, sp.created_at AS saved_at
+       FROM saved_projects sp
+       JOIN projects p ON sp.project_id = p.id
+       WHERE sp.user_id = ? AND p.status = 'approved'
        ORDER BY sp.created_at DESC
        LIMIT ${Number(limit)} OFFSET ${Number(offset)}`,
       [user_id]
@@ -256,8 +414,8 @@ exports.getSavedProjects = async (req, res) => {
         currentPage: page,
         limit,
         hasNextPage: page < totalPages,
-        hasPrevPage: page > 1
-      }
+        hasPrevPage: page > 1,
+      },
     });
   } catch (error) {
     res.status(500).json({ success: false, message: 'Server Error: ' + error.message });
