@@ -1,8 +1,8 @@
 const express = require('express');
 const router = express.Router();
-const pool = require('../config/db'); // apna db pool path adjust karein
-const { verifyToken, requireAdmin } = require('../middleware/auth'); // apna auth middleware adjust karein
-
+const pool = require('../config/db');
+const { verifyToken, requireAdmin } = require('../middleware/authMiddleware');
+const c = require('../controllers/adminConsoleController');
 const MAX_FEATURED_SLOTS = 6;
 
 // GET /api/admin/projects?status=all
@@ -30,7 +30,7 @@ router.get('/admin/projects', verifyToken, requireAdmin, async (req, res) => {
          p.is_featured,
          p.featured_at,
          p.created_at,
-         u.name AS owner_name,
+         u.fullName AS owner_name,
          u.email AS owner_email
        FROM projects p
        LEFT JOIN users u ON p.user_id = u.id
@@ -108,6 +108,17 @@ router.patch('/admin/projects/:id/feature', verifyToken, requireAdmin, async (re
       'SELECT COUNT(*) AS featuredCount FROM projects WHERE is_featured = 1'
     );
 
+    await c.logAdminAction(
+      {
+        adminId: req.user.id,
+        action: nextFeatured === 1 ? 'feature_project' : 'unfeature_project',
+        targetType: 'project',
+        targetId: projectId,
+        summary: `${nextFeatured === 1 ? 'Featured' : 'Unfeatured'} project #${projectId}`,
+      },
+      conn
+    );
+
     await conn.commit();
 
     return res.json({
@@ -124,5 +135,13 @@ router.patch('/admin/projects/:id/feature', verifyToken, requireAdmin, async (re
     conn.release();
   }
 });
+
+// ---- Admin console v1 ----
+router.get('/admin/console/projects', verifyToken, requireAdmin, c.listProjects);
+router.post('/admin/console/projects/:id/unpublish', verifyToken, requireAdmin, c.unpublishProject);
+router.get('/admin/console/users', verifyToken, requireAdmin, c.listUsers);
+router.post('/admin/console/users/:id/suspend', verifyToken, requireAdmin, c.suspendUser);
+router.post('/admin/console/users/:id/reactivate', verifyToken, requireAdmin, c.reactivateUser);
+router.get('/admin/console/activity', verifyToken, requireAdmin, c.getActivity);
 
 module.exports = router;
