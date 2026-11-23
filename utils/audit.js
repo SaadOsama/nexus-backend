@@ -1,12 +1,12 @@
 const db = require('../config/db');
 
 // Har admin action yahan se audit_log mein jata hai. Fail ho to main action nahi rukta.
-exports.logAudit = async ({ adminId, action, targetType, targetId, summary }) => {
+exports.logAudit = async ({ adminId, action, targetType, targetId, summary, details = null }) => {
   try {
     await db.query(
-      `INSERT INTO audit_log (admin_id, action, target_type, target_id, summary)
-       VALUES (?, ?, ?, ?, ?)`,
-      [adminId || null, action, targetType, targetId || null, String(summary).slice(0, 255)]
+      `INSERT INTO audit_log (admin_id, action, target_type, target_id, summary, details)
+       VALUES (?, ?, ?, ?, ?, ?)`,
+      [adminId || null, action, targetType, targetId || null, String(summary).slice(0, 255), details]
     );
   } catch (err) {
     console.warn('Audit log insert failed:', err.message);

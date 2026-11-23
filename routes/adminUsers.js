@@ -3,6 +3,7 @@ const router = express.Router();
 const db = require('../config/db');
 const { verifyToken } = require('../controllers/authController');
 const { logAudit } = require('../utils/audit');
+const c = require('../controllers/adminConsoleController');
 
 const requireAdmin = (req, res, next) => {
   if (!req.user || req.user.role !== 'admin') {
@@ -93,5 +94,13 @@ router.patch('/users/:id/status', verifyToken, requireAdmin, async (req, res) =>
     res.status(500).json({ success: false, message: 'Failed to update user status.' });
   }
 });
+
+// ---- Admin console v1 ----
+// GET  /api/admin/console/projects?q=&status=
+router.get('/console/projects', verifyToken, requireAdmin, c.listProjects);
+// POST /api/admin/console/projects/:id/unpublish   body: { reason }
+router.post('/console/projects/:id/unpublish', verifyToken, requireAdmin, c.unpublishProject);
+// GET  /api/admin/console/activity
+router.get('/console/activity', verifyToken, requireAdmin, c.getActivity);
 
 module.exports = router;
