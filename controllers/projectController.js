@@ -151,7 +151,7 @@ exports.getMyProjects = async (req, res) => {
   }
 };
 
-// 3. Create: saveAsDraft=true to draft, warna seedha review ke liye pending
+// 3. Create: draft to draft, warna seedha review ke liye pending
 exports.createProject = async (req, res) => {
   try {
     const user_id = req.user.id;
@@ -160,7 +160,10 @@ exports.createProject = async (req, res) => {
       looking_for, funding_requirement, match_score, tags, saveAsDraft,
     } = req.body;
 
-    const isDraft = saveAsDraft === true || saveAsDraft === 'true';
+    // saveAsDraft: true YA status: 'draft', dono ko draft maana jayega
+    const isDraft =
+      saveAsDraft === true || saveAsDraft === 'true' ||
+      String(req.body.status || '').toLowerCase() === 'draft';
 
     if (!title || !String(title).trim()) {
       return res.status(400).json({ success: false, message: 'Title is required.' });
@@ -224,7 +227,7 @@ exports.getProjectById = async (req, res) => {
   }
 };
 
-// 4. Update: sirf owner, sirf draft ya changes_requested mein
+// 4. Update: sirf owner, draft / changes_requested / rejected mein
 exports.updateProject = async (req, res) => {
   try {
     const id = Number(req.params.id);
@@ -255,7 +258,7 @@ exports.updateProject = async (req, res) => {
            looking_for = COALESCE(?, looking_for),
            funding_requirement = COALESCE(?, funding_requirement),
            tags = COALESCE(?, tags)
-      WHERE id = ? AND user_id = ? AND status IN ('draft','changes_requested','rejected')`,
+       WHERE id = ? AND user_id = ? AND status IN ('draft','changes_requested','rejected')`,
       [
         title || null, description || null, category || null, industry || null, stage || null,
         location || null, looking_for || null, funding_requirement || null, tagsJson,
@@ -292,7 +295,7 @@ exports.deleteProject = async (req, res) => {
   }
 };
 
-// Submit / Resubmit: draft ya changes_requested se pending, submitted_at = abhi
+// Submit / Resubmit: draft, changes_requested ya rejected se pending, submitted_at = abhi
 exports.submitProject = async (req, res) => {
   try {
     const id = Number(req.params.id);
@@ -314,7 +317,7 @@ exports.submitProject = async (req, res) => {
 
     const [result] = await db.execute(
       `UPDATE projects SET status = 'pending', submitted_at = NOW()
-         WHERE id = ? AND user_id = ? AND status IN ('draft','changes_requested','rejected')`,
+       WHERE id = ? AND user_id = ? AND status IN ('draft','changes_requested','rejected')`,
       [id, req.user.id]
     );
     if (result.affectedRows === 0) {
