@@ -1,9 +1,9 @@
 // Status rules: sab kuch ek hi jagah define hai.
 // Published = 'approved'. Approved project ko owner edit ya delete nahi kar sakta.
 
-const OWNER_EDITABLE = ['draft', 'changes_requested'];
+const OWNER_EDITABLE = ['draft', 'changes_requested', 'rejected'];
 const OWNER_DELETABLE = ['draft'];
-const OWNER_SUBMITTABLE = ['draft', 'changes_requested'];
+const OWNER_SUBMITTABLE = ['draft', 'changes_requested', 'rejected'];
 
 const REVIEW_ACTIONS = {
   approve: 'approved',

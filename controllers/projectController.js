@@ -1,5 +1,6 @@
 ﻿const db = require('../config/db');
 const { OWNER_EDITABLE, OWNER_DELETABLE, OWNER_SUBMITTABLE } = require('../utils/ProjectRules');
+const { IS_FEATURED_SQL } = require('../utils/featured');
 
 const toList = (v) =>
   String(v || '')
@@ -28,12 +29,6 @@ const notifyAdmins = async (projectId, title, resubmitted = false) => {
 // 1. Browse ALL approved projects: search, filters, sort, pagination
 exports.getBrowseProjects = async (req, res) => {
   try {
-    await db.query(
-      `UPDATE projects
-       SET is_featured = 0, featured_at = NULL, featured_until = NULL
-       WHERE is_featured = 1 AND featured_until IS NOT NULL AND featured_until < CURDATE()`
-    );
-
     const currentUserId = req.user?.id || req.query.current_user_id || req.query.user_id || 0;
 
     const page = Math.max(1, parseInt(req.query.page, 10) || 1);
@@ -47,7 +42,8 @@ exports.getBrowseProjects = async (req, res) => {
     const where = ["p.status = 'approved'", "p.user_id NOT IN (SELECT id FROM users WHERE is_suspended = 1)"];
     const params = [];
 
-    if (featured === 'true' || featured === '1') where.push('p.is_featured = 1');
+    // Expiry read time par check hota hai
+    if (featured === 'true' || featured === '1') where.push(IS_FEATURED_SQL);
 
     const realIndustries = industries.filter((i) => i !== 'All projects' && i !== 'All');
     if (realIndustries.length) {
@@ -81,7 +77,8 @@ exports.getBrowseProjects = async (req, res) => {
 
     const whereClause = `WHERE ${where.join(' AND ')}`;
 
-    let orderBy = 'p.is_featured DESC, p.featured_at DESC, p.created_at DESC';
+    // Default sort: active featured pehle. Doosre sorts mein featured pin nahi hota.
+    let orderBy = `${IS_FEATURED_SQL} DESC, p.featured_at DESC, p.created_at DESC`;
     if (sort === 'newest') orderBy = 'p.created_at DESC';
     if (sort === 'az') orderBy = 'p.title ASC, p.created_at DESC';
 
@@ -94,6 +91,7 @@ exports.getBrowseProjects = async (req, res) => {
 
     const [rows] = await db.query(
       `SELECT p.*,
+              ${IS_FEATURED_SQL} AS is_featured,
               CASE WHEN p.user_id = ? THEN 1 ELSE 0 END AS isOwner,
               CASE WHEN c.id IS NOT NULL THEN 1 ELSE 0 END AS hasRequested,
               c.status AS collaborationStatus
@@ -141,7 +139,10 @@ exports.getFilterOptions = async (req, res) => {
 exports.getMyProjects = async (req, res) => {
   try {
     const [rows] = await db.execute(
-      'SELECT * FROM projects WHERE user_id = ? ORDER BY is_featured DESC, created_at DESC',
+      `SELECT p.*, ${IS_FEATURED_SQL} AS is_featured
+       FROM projects p
+       WHERE p.user_id = ?
+       ORDER BY ${IS_FEATURED_SQL} DESC, p.created_at DESC`,
       [req.user.id]
     );
     res.status(200).json({ success: true, data: rows });
@@ -205,7 +206,7 @@ exports.getProjectById = async (req, res) => {
     }
 
     const [rows] = await db.execute(
-      `SELECT p.*, u.fullName AS ownerName
+      `SELECT p.*, ${IS_FEATURED_SQL} AS is_featured, u.fullName AS ownerName
        FROM projects p LEFT JOIN users u ON u.id = p.user_id
        WHERE p.id = ?`,
       [id]
@@ -254,7 +255,7 @@ exports.updateProject = async (req, res) => {
            looking_for = COALESCE(?, looking_for),
            funding_requirement = COALESCE(?, funding_requirement),
            tags = COALESCE(?, tags)
-       WHERE id = ? AND user_id = ? AND status IN ('draft','changes_requested')`,
+      WHERE id = ? AND user_id = ? AND status IN ('draft','changes_requested','rejected')`,
       [
         title || null, description || null, category || null, industry || null, stage || null,
         location || null, looking_for || null, funding_requirement || null, tagsJson,
@@ -313,14 +314,14 @@ exports.submitProject = async (req, res) => {
 
     const [result] = await db.execute(
       `UPDATE projects SET status = 'pending', submitted_at = NOW()
-       WHERE id = ? AND user_id = ? AND status IN ('draft','changes_requested')`,
+         WHERE id = ? AND user_id = ? AND status IN ('draft','changes_requested','rejected')`,
       [id, req.user.id]
     );
     if (result.affectedRows === 0) {
       return res.status(409).json({ success: false, message: 'This project cannot be submitted in its current state.' });
     }
 
-    await notifyAdmins(id, p.title, p.status === 'changes_requested');
+    await notifyAdmins(id, p.title, p.status === 'changes_requested' || p.status === 'rejected');
     res.json({ success: true, message: 'Project submitted for review.' });
   } catch (error) {
     res.status(500).json({ success: false, message: 'Server Error: ' + error.message });
@@ -396,7 +397,7 @@ exports.getSavedProjects = async (req, res) => {
     const totalPages = Math.ceil(totalProjects / limit) || 1;
 
     const [rows] = await db.query(
-      `SELECT p.*, sp.created_at AS saved_at
+      `SELECT p.*, ${IS_FEATURED_SQL} AS is_featured, sp.created_at AS saved_at
        FROM saved_projects sp
        JOIN projects p ON sp.project_id = p.id
        WHERE sp.user_id = ? AND p.status = 'approved' AND p.user_id NOT IN (SELECT id FROM users WHERE is_suspended = 1)

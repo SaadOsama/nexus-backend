@@ -5,7 +5,7 @@ const { verifyToken } = require('../middleware/authMiddleware');
 const projectController = require('../controllers/projectController');
 const { REVIEW_ACTIONS } = require('../utils/ProjectRules');
 
-const MAX_FEATURED_SLOTS = 6;
+const { MAX_FEATURED_SLOTS, IS_FEATURED_SQL } = require('../utils/featured');
 
 // Admin-only guard
 const verifyAdmin = (req, res, next) => {
@@ -49,13 +49,14 @@ router.get('/mine', verifyToken, async (req, res) => {
 
     const [rows] = await db.query(
       `SELECT p.*,
+              ${IS_FEATURED_SQL} AS is_featured,
               1 AS isOwner,
               CASE WHEN c.id IS NOT NULL THEN 1 ELSE 0 END AS hasRequested
        FROM projects p
        LEFT JOIN collaborations c
          ON c.project_id = p.id AND c.sender_id = ?
        WHERE p.user_id = ?
-       ORDER BY p.is_featured DESC, p.created_at DESC
+       ORDER BY ${IS_FEATURED_SQL} DESC, p.created_at DESC
        LIMIT ${Number(limit)} OFFSET ${Number(offset)}`,
       [userId, userId]
     );
