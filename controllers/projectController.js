@@ -1,6 +1,12 @@
 ﻿const db = require('../config/db');
 const { OWNER_EDITABLE, OWNER_DELETABLE, OWNER_SUBMITTABLE } = require('../utils/ProjectRules');
 const { IS_FEATURED_SQL } = require('../utils/featured');
+const {
+  validateProjectFields, serializeProject, normalizeStage,
+} = require('../utils/projectFields');
+
+const failValidation = (res, errors) =>
+  res.status(400).json({ success: false, message: Object.values(errors)[0], errors });
 
 const toList = (v) =>
   String(v || '')
@@ -37,7 +43,8 @@ exports.getBrowseProjects = async (req, res) => {
 
     const { search, q, featured, country, funding, sort } = req.query;
     const industries = toList(req.query.industry || req.query.category);
-    const stages = toList(req.query.stage);
+    // Purana "Growth" filter bhi "Scaling" se match karega
+    const stages = toList(req.query.stage).map(normalizeStage).filter(Boolean);
 
     const where = ["p.status = 'approved'", "p.user_id NOT IN (SELECT id FROM users WHERE is_suspended = 1)"];
     const params = [];
@@ -69,10 +76,10 @@ exports.getBrowseProjects = async (req, res) => {
     const keyword = (q || search || '').trim();
     if (keyword) {
       where.push(
-        '(p.title LIKE ? OR p.description LIKE ? OR p.tags LIKE ? OR p.looking_for LIKE ?)'
+        '(p.title LIKE ? OR p.description LIKE ? OR p.tags LIKE ? OR p.looking_for LIKE ? OR p.problem_statement LIKE ? OR p.tech_stack LIKE ?)'
       );
       const term = `%${keyword}%`;
-      params.push(term, term, term, term);
+      params.push(term, term, term, term, term, term);
     }
 
     const whereClause = `WHERE ${where.join(' AND ')}`;
@@ -106,7 +113,7 @@ exports.getBrowseProjects = async (req, res) => {
 
     res.status(200).json({
       success: true,
-      data: rows,
+      data: rows.map(serializeProject),
       pagination: {
         totalProjects,
         totalPages,
@@ -145,7 +152,7 @@ exports.getMyProjects = async (req, res) => {
        ORDER BY ${IS_FEATURED_SQL} DESC, p.created_at DESC`,
       [req.user.id]
     );
-    res.status(200).json({ success: true, data: rows });
+    res.status(200).json({ success: true, data: rows.map(serializeProject) });
   } catch (error) {
     res.status(500).json({ success: false, message: 'Server Error: ' + error.message });
   }
@@ -156,8 +163,8 @@ exports.createProject = async (req, res) => {
   try {
     const user_id = req.user.id;
     const {
-      title, description, category, industry, stage, location,
-      looking_for, funding_requirement, match_score, tags, saveAsDraft,
+      title, category, industry, location,
+      looking_for, match_score, tags, saveAsDraft,
     } = req.body;
 
     // saveAsDraft: true YA status: 'draft', dono ko draft maana jayega
@@ -168,7 +175,12 @@ exports.createProject = async (req, res) => {
     if (!title || !String(title).trim()) {
       return res.status(400).json({ success: false, message: 'Title is required.' });
     }
-    if (!isDraft && (!description || !String(description).trim())) {
+
+    // Naye fields: draft par bhi galat value reject hogi
+    const { errors, values, ok } = validateProjectFields(req.body);
+    if (!ok) return failValidation(res, errors);
+
+    if (!isDraft && !values.description) {
       return res.status(400).json({ success: false, message: 'Title and description are required.' });
     }
 
@@ -178,12 +190,16 @@ exports.createProject = async (req, res) => {
     const [result] = await db.execute(
       `INSERT INTO projects
         (user_id, title, description, category, industry, stage, location, looking_for,
-         funding_requirement, match_score, tags, status, submitted_at)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ${isDraft ? 'NULL' : 'NOW()'})`,
+         funding_requirement, match_score, tags, status,
+         problem_statement, tech_stack, required_skills, website, pitch_url, team_size,
+         submitted_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ${isDraft ? 'NULL' : 'NOW()'})`,
       [
-        user_id, String(title).trim(), description || '', category || null, industry || null,
-        stage || null, location || null, looking_for || null, funding_requirement || null,
+        user_id, String(title).trim(), values.description ?? '', category || null, industry || null,
+        values.stage ?? null, location || null, looking_for || null, values.funding_requirement ?? null,
         match_score || 90, tagsJson, status,
+        values.problem_statement ?? null, values.tech_stack ?? null, values.required_skills ?? null,
+        values.website ?? null, values.pitch_url ?? null, values.team_size ?? null,
       ]
     );
 
@@ -221,7 +237,7 @@ exports.getProjectById = async (req, res) => {
     if (!project || !(isOwner || isAdmin)) {
       return res.status(404).json({ success: false, message: 'Project not found.' });
     }
-    res.json({ success: true, data: project });
+    res.json({ success: true, data: serializeProject(project) });
   } catch (error) {
     res.status(500).json({ success: false, message: 'Server Error: ' + error.message });
   }
@@ -231,12 +247,12 @@ exports.getProjectById = async (req, res) => {
 exports.updateProject = async (req, res) => {
   try {
     const id = Number(req.params.id);
-    const {
-      title, description, category, industry, stage, location,
-      looking_for, funding_requirement, tags,
-    } = req.body;
+    const { title, category, industry, location, looking_for, tags } = req.body;
 
-    const [existing] = await db.execute('SELECT user_id, status FROM projects WHERE id = ?', [id]);
+    const [existing] = await db.execute(
+      'SELECT user_id, status, stage, funding_requirement FROM projects WHERE id = ?',
+      [id]
+    );
     if (!existing.length || Number(existing[0].user_id) !== Number(req.user.id)) {
       return res.status(404).json({ success: false, message: 'Project not found.' });
     }
@@ -244,26 +260,43 @@ exports.updateProject = async (req, res) => {
       return res.status(409).json({ success: false, message: 'This project can no longer be edited.' });
     }
 
+    const { errors, values, ok } = validateProjectFields(req.body, { partial: true, current: existing[0] });
+    if (!ok) return failValidation(res, errors);
+
     const tagsJson = Array.isArray(tags) ? JSON.stringify(tags) : null;
+
+    // Purane fields: khali aaye to purani value rehti hai
+    const keep = {
+      title: title || null,
+      description: values.description ?? null,
+      category: category || null,
+      industry: industry || null,
+      stage: values.stage ?? null,
+      location: location || null,
+      looking_for: looking_for || null,
+      funding_requirement: values.funding_requirement ?? null,
+      tags: tagsJson,
+    };
+    const sets = [];
+    const params = [];
+    for (const [col, val] of Object.entries(keep)) {
+      sets.push(`${col} = COALESCE(?, ${col})`);
+      params.push(val);
+    }
+
+    // Naye optional fields: bheje gaye to set honge, khali bheje to clear (NULL)
+    for (const col of ['problem_statement', 'tech_stack', 'required_skills', 'website', 'pitch_url', 'team_size']) {
+      if (col in values) {
+        sets.push(`${col} = ?`);
+        params.push(values[col]);
+      }
+    }
 
     // status aur user_id body se kabhi nahi liye jate
     await db.execute(
-      `UPDATE projects
-       SET title = COALESCE(?, title),
-           description = COALESCE(?, description),
-           category = COALESCE(?, category),
-           industry = COALESCE(?, industry),
-           stage = COALESCE(?, stage),
-           location = COALESCE(?, location),
-           looking_for = COALESCE(?, looking_for),
-           funding_requirement = COALESCE(?, funding_requirement),
-           tags = COALESCE(?, tags)
+      `UPDATE projects SET ${sets.join(', ')}
        WHERE id = ? AND user_id = ? AND status IN ('draft','changes_requested','rejected')`,
-      [
-        title || null, description || null, category || null, industry || null, stage || null,
-        location || null, looking_for || null, funding_requirement || null, tagsJson,
-        id, req.user.id,
-      ]
+      [...params, id, req.user.id]
     );
 
     res.status(200).json({ success: true, message: 'Project updated successfully!' });
@@ -411,7 +444,7 @@ exports.getSavedProjects = async (req, res) => {
 
     res.status(200).json({
       success: true,
-      data: rows,
+      data: rows.map(serializeProject),
       pagination: {
         totalProjects,
         totalPages,

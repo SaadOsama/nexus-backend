@@ -8,6 +8,13 @@ async function columnExists(db, table, col) {
 }
 
 async function addColumnIfMissing(db, col, definition) {
+      await addColumnIfMissing(db, 'problem_statement', 'VARCHAR(500) NULL AFTER description');
+    await addColumnIfMissing(db, 'tech_stack', 'LONGTEXT NULL');
+    await addColumnIfMissing(db, 'required_skills', 'LONGTEXT NULL');
+    await addColumnIfMissing(db, 'website', 'VARCHAR(500) NULL');
+    await addColumnIfMissing(db, 'pitch_url', 'VARCHAR(500) NULL');
+    await addColumnIfMissing(db, 'team_size', 'SMALLINT UNSIGNED NULL');
+    await db.query(`UPDATE projects SET stage = 'Scaling' WHERE stage = 'Growth'`);
   if (!(await columnExists(db, 'projects', col))) {
     await db.query(`ALTER TABLE projects ADD COLUMN \`${col}\` ${definition}`);
     console.log(`[schema] added projects.${col}`);
